@@ -158,11 +158,11 @@ python -m sglang.launch_server \
 
 | 提交 | 内容 |
 | --- | --- |
-| `403bcebb` | `feat(npu)`：新增 `miles/platforms/npu.py` 与 `MILES_ACCELERATOR=npu` 选择，含 4 个 CPU 单测 |
-| `968fe60d` | `fix(weight-update)`：disk-delta 里 `torch.cuda.current_stream / current_device` 改 `torch.accelerator` |
-| `0bef861b` | `fix(fsdp)`：actor/checkpoint 的 `current_device`、`empty_cache`、`synchronize`、RNG 改 `torch.accelerator` |
-| `39fb7614` | `fix(fsdp)`：`init_device_mesh` 的 `"cuda"` 改 `current_platform.device_type`（否则 `torch._C._cuda_setDevice` 崩） |
-| `1d361ffe` | `docs(npu)`：新增 `scripts/npu/run_qwen3_5_4b_fsdp.py` 与 `scripts/npu/README.md` |
+| `085d3d8a` | `feat(npu)`：新增 `miles/platforms/npu.py` 与 `MILES_ACCELERATOR=npu` 选择，含 4 个 CPU 单测 |
+| `483d20e8` | `fix(weight-update)`：disk-delta 里 `torch.cuda.current_stream / current_device` 改 `torch.accelerator` |
+| `dd7140ef` | `fix(fsdp)`：actor/checkpoint 的 `current_device`、`empty_cache`、`synchronize`、RNG 改 `torch.accelerator` |
+| `158f554c` | `fix(fsdp)`：`init_device_mesh` 的 `"cuda"` 改 `current_platform.device_type`（否则 `torch._C._cuda_setDevice` 崩） |
+| `4aa155c9` | `docs(npu)`：新增 `scripts/npu/run_qwen3_5_4b_fsdp.py` 与 `scripts/npu/README.md` |
 
 `NpuPlatform` 的取值：`device_type=npu`、`compile_backend=eager`、`triton_kernels=False`、`flex_attention=False`、
 `dynamic_shapes=False`、`nvml_numa_affinity=False`、`rooted_reduce=False`、`premul_sum_reduce=False`、
