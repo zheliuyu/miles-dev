@@ -31,7 +31,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-import torch
 import typer
 
 from miles.utils.external_utils import command_utils
@@ -55,8 +54,13 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     rollout_batch_size: int = 4
     n_samples_per_prompt: int = 4
     rollout_max_response_len: int = 1024
+    save_dir: str = "/home/weichunyu/miles-950/checkpoints"
+    # one 4B checkpoint costs ~51 GB (20 GB model + 32 GB Adam fp32 state), and the root disk is tight
+    save_interval: int = 3
     debug_data_dir: str = "/home/weichunyu/miles-950/debug-rollout"
     extra_args: str = ""
+    # the engine runs in its own shell; a run must not SIGKILL it, which the backend's default cleanup does
+    graceful_ray_stop: bool = True
 
 
 def _require(path: str, what: str) -> None:
@@ -125,8 +129,8 @@ def _misc_args(args: ScriptArgs) -> str:
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 1 "
         "--num-gpus-per-node 1 "
-        f"--save {Path(args.debug_data_dir).parent / 'checkpoints'} "
-        "--save-interval 1 "
+        f"--save {args.save_dir} "
+        f"--save-interval {args.save_interval} "
     )
 
 
@@ -226,6 +230,9 @@ def make_debug_data(args: ScriptArgs) -> None:
     out_dir = Path(args.debug_data_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "0.pt"
+    # imported here so `--help` works without the CANN environment that importing torch needs
+    import torch
+
     torch.save(dict(rollout_id=0, metadata={}, samples=[sample.to_dict() for sample in samples]), path)
     typer.echo(f"wrote {path} with {len(samples)} samples")
 
@@ -274,6 +281,8 @@ def debug_train(args: ScriptArgs):
     """Train one rollout on the fixed debug batch, with no SGLang server."""
     args.rollout_batch_size = 2
     args.n_samples_per_prompt = 2
+    # one rollout with the default interval would never save; the debug run exists to show the checkpoint lands
+    args.save_interval = 1
     os.environ.setdefault("NCCL_NVLS_ENABLE", "0")
     train_args = " ".join(
         [
