@@ -1,4 +1,4 @@
-"""The training process's platform: what differs between CUDA and TPU (torch_tpu), chosen once by MILES_ACCELERATOR.
+"""The training process's platform: CUDA, NPU (torch_npu), and TPU (torch_tpu), chosen once by MILES_ACCELERATOR.
 
 Everything `torch.accelerator` covers (synchronize, empty_cache, memory stats, the device index) is called directly.
 """
@@ -53,12 +53,17 @@ def _select_platform() -> Platform:
     device_type = os.environ.get("MILES_ACCELERATOR", "cuda")
     if device_type == "cuda":
         return Platform()
+    if device_type == "npu":
+        # imports torch_npu, which CUDA and TPU processes never load
+        from miles.platforms.npu import NpuPlatform
+
+        return NpuPlatform()
     if device_type == "tpu":
         # imports torch_tpu, which CUDA processes never load
         from miles.platforms.tpu import TpuPlatform
 
         return TpuPlatform()
-    raise ValueError(f"MILES_ACCELERATOR={device_type!r}; expected cuda or tpu")
+    raise ValueError(f"MILES_ACCELERATOR={device_type!r}; expected cuda, npu, or tpu")
 
 
 current_platform = _select_platform()
