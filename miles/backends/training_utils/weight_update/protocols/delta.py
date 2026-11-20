@@ -141,7 +141,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             if self._use_pinned and nbytes <= self._max_bytes:
                 buf = self._free_q.get()  # blocks when all buffers are in flight -> backpressures the gather
                 buf[:nbytes].copy_(flat, non_blocking=True)
-                torch.cuda.current_stream().synchronize()
+                torch.accelerator.current_stream().synchronize()
                 payload, pinned = buf, True
             else:
                 payload, pinned = flat.cpu().numpy(), False
@@ -415,7 +415,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         counts = torch.tensor(
             [self.changed_bytes, self.total_bytes, self.wire_bytes],
             dtype=torch.int64,
-            device=torch.cuda.current_device(),
+            device=torch.device(
+                torch.accelerator.current_accelerator().type, torch.accelerator.current_device_index()
+            ),
         )
         dist.all_reduce(counts)
         changed, total, wire = counts.tolist()
