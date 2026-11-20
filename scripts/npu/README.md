@@ -117,3 +117,16 @@ One 4B checkpoint costs **~51 GB** (Adam keeps fp32 exp-avg/exp-avg-sq). The roo
 | `unrecognized arguments: --seq-length` | that is a torchtitan flag; the FSDP backend takes `--max-tokens-per-gpu` |
 | Ray job hangs before any log | the cluster has no `GPU` resource; use the launcher (it starts Ray with `--num-gpus`), not a bare `ray start` |
 | `Address already in use` on the engine port | an old engine is alive; `pkill -f sglang.launch_server` or pass `--sglang-port` |
+
+## Local records (delete before the PR)
+
+These are kept for the audit trail of the first 950DT run, not for upstream:
+
+| Path | What |
+| --- | --- |
+| `docs/hardware-platforms/ascend-npu-run-record.md` | the full run record: hardware facts, why the in-tree NPU patch is unusable, the chosen route, probes, commits, stage-4 result, remaining plan |
+| `scripts/npu/probes/` | the probe A/B/C/D scripts and the debug-training launcher as they were run |
+| `scripts/npu/legacy/run_qwen3_5_4b_npu.py` | the earlier draft launcher (previous host), superseded by `run_qwen3_5_4b_fsdp.py` |
+| `scripts/npu/evidence/` | build logs, probe logs, and the stage-4 checkpoint metadata plus step metrics |
+
+Before opening the PRs in §7 of the run record, delete this section, `probes/`, `legacy/`, `evidence/`, and the run record itself.
