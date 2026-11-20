@@ -76,6 +76,18 @@ def _trainer_env(args: ScriptArgs) -> dict[str, str]:
     }
 
 
+def _dataset_args(args: ScriptArgs) -> str:
+    # the rollout executor builds its data source even when the samples come from --load-debug-rollout-data
+    return (
+        f"--prompt-data {args.data_path} "
+        "--input-key prompt "
+        "--label-key label "
+        "--apply-chat-template "
+        """--apply-chat-template-kwargs '{"enable_thinking":false}' """
+        "--rollout-shuffle "
+    )
+
+
 def _recipe_args(args: ScriptArgs) -> str:
     return (
         f"--rollout-batch-size {args.rollout_batch_size} "
@@ -99,7 +111,6 @@ def _recipe_args(args: ScriptArgs) -> str:
 def _train_backend_args(args: ScriptArgs) -> str:
     return (
         "--train-backend fsdp "
-        f"--seq-length {args.seq_length} "
         "--micro-batch-size 1 "
         "--gradient-checkpointing "
         "--use-dynamic-batch-size "
@@ -184,23 +195,30 @@ def make_debug_data(args: ScriptArgs) -> None:
     response_ids = tokenizer(response_text, add_special_tokens=False)["input_ids"]
 
     samples = []
-    for prompt_index, prompt in enumerate(prompts):
-        prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+    for prompt_index, raw_prompt in enumerate(prompts):
+        # flatten chat messages to plain text: the debug file only needs integer token ids
+        text = (
+            "\n".join(str(message.get("content", "")) for message in raw_prompt)
+            if isinstance(raw_prompt, list)
+            else raw_prompt
+        )
+        prompt_ids = list(tokenizer(text, add_special_tokens=False)["input_ids"])
         prompt_ids = prompt_ids[: max(1, args.seq_length - len(response_ids) - 2)]
-        for output_index in range(args.n_samples_per_prompt):
-            tokens = prompt_ids + response_ids
+        for _ in range(args.n_samples_per_prompt):
+            tokens = [int(token) for token in (*prompt_ids, *response_ids)]
             samples.append(
                 Sample(
                     index=prompt_index,
                     group_index=prompt_index,
-                    prompt=prompt,
+                    prompt=text,
                     tokens=tokens,
                     response=response_text,
                     response_length=len(response_ids),
                     loss_mask=[1] * len(response_ids),
                     rollout_log_probs=[0.0] * len(response_ids),
-                    # no correct/incorrect signal yet: training just has to produce a finite loss
-                    reward=1.0 if output_index == 0 else 0.0,
+                    # GRPO normalizes within one rollout, which rejects mixed rewards: a uniform reward keeps the
+                    # first step about the training loop, not about the reward signal
+                    reward=1.0,
                     status=Sample.Status.COMPLETED,
                 )
             )
@@ -262,6 +280,7 @@ def debug_train(args: ScriptArgs):
             f"--hf-checkpoint {args.model_path}",
             f"--load-debug-rollout-data {Path(args.debug_data_dir) / '{rollout_id}.pt'}",
             "--num-rollout 1",
+            _dataset_args(args),
             _recipe_args(args),
             _train_backend_args(args),
             _misc_args(args),
@@ -281,12 +300,7 @@ def train(args: ScriptArgs):
     train_args = " ".join(
         [
             f"--hf-checkpoint {args.model_path}",
-            f"--prompt-data {args.data_path}",
-            "--input-key prompt",
-            "--label-key label",
-            "--apply-chat-template",
-            """--apply-chat-template-kwargs '{"enable_thinking":false}'""",
-            "--rollout-shuffle",
+            _dataset_args(args),
             "--rm-type math",
             f"--num-rollout {args.num_rollout}",
             _recipe_args(args),
