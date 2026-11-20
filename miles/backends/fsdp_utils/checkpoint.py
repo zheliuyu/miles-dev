@@ -19,6 +19,12 @@ from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENA
 logger = logging.getLogger(__name__)
 
 
+def _accelerator_module():
+    """The device module of the current accelerator (torch.cuda, torch.npu, ...) whose RNG state we save."""
+    accelerator = torch.accelerator.current_accelerator()
+    return None if accelerator is None else getattr(torch, accelerator.type, None)
+
+
 class ModelState(Stateful):
     """Wrapper for model state only."""
 
@@ -182,8 +188,10 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         rng_state = checkpoint_payload["rng"]
         if "torch" in rng_state:
             torch.set_rng_state(rng_state["torch"])
-        if torch.cuda.is_available() and "cuda" in rng_state:
-            torch.cuda.set_rng_state_all(rng_state["cuda"])
+        module = _accelerator_module()
+        key = module.__name__.rsplit(".", 1)[-1] if module is not None else None
+        if key is not None and key in rng_state and hasattr(module, "set_rng_state_all"):
+            module.set_rng_state_all(rng_state[key])
 
     metadata = checkpoint_payload.get("metadata") or {}
     iteration = checkpoint_payload.get("iteration")
@@ -197,7 +205,7 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         if actor.args.start_rollout_id is None:
             actor.args.start_rollout_id = iteration
 
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     dist.barrier()
 
 
@@ -207,7 +215,7 @@ def save(actor: Any, iteration: int) -> None:
     Saves model weights and optimizer state to separate directories.
     This allows loading weights without optimizer or deleting optimizer before loading.
     """
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     base_dir = Path(actor.args.backend.save).expanduser()
     step_id = iteration + 1
@@ -247,7 +255,10 @@ def save(actor: Any, iteration: int) -> None:
 
     if dist.get_rank() == 0:
         rng_state = {"torch": torch.get_rng_state()}
-        rng_state["cuda"] = torch.cuda.get_rng_state_all()
+        module = _accelerator_module()
+        if module is not None and hasattr(module, "get_rng_state_all"):
+            # keyed by the accelerator name, so a CUDA checkpoint keeps writing the "cuda" entry it always wrote
+            rng_state[module.__name__.rsplit(".", 1)[-1]] = module.get_rng_state_all()
         torch.save(rng_state, checkpoint_dir / "rng.pt")
 
         metadata = {
