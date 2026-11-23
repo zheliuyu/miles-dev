@@ -288,3 +288,78 @@ PR 说明附本机日志（探针 A/B/C/D、rollout 的 loss/reward、`npu-smi` 
 - 权重：`/mnt/weight/Qwen3.5-4B`；数据：`/mnt/share/dataset/dapo-math-17k/dapo-math-17k.jsonl`
 - 工作目录：`/home/weichunyu/miles-950/`（`checkpoints/`、`weight-delta/`、`debug-rollout/`、日志）
 - 平台入口：`miles/platforms/npu.py`；安装记录见本文 §5
+
+## 12. 文档命令复跑与修改必要性（2026-11-24）
+
+远端与本地都在 `bebb8560`。工作目录 `/home/weichunyu/miles-950/doc-verify`，模型与数据用符号链接接到文档里的相对路径。检查点不写阶段 5 / 阶段 6 的目录。
+
+这次改过的文档里，带可执行命令的只有两篇：`docs/hardware-platforms/ascend-npu.md` 和 `scripts/npu/README.md`。`overview.md` 和仓库根 `README.md` 只链到硬件页，没有命令。镜像、起容器、装包这三段是给一台空机器用的，不在这台已经装好的机器上再执行。
+
+| 命令 | 出处 | 这次 | 原因 |
+| --- | --- | --- | --- |
+| `docker pull ascendai/torch-npu:2.10.0.post7-cann9.2.0-950-openeuler24.03-py3.12` | 硬件页 Image | 不执行 | 本机闭环用的是已装好的 `miles-950-py312`，版本与该镜像一致。Ubuntu 22.04 那条只是同栈的另一个标签，文档没有单独的 pull 命令 |
+| `docker run ... --device /dev/davinci0 --device /dev/davinci1 ... -it ... /bin/bash` | 硬件页 Start the container | 不执行 | 交互容器，而且会把文档示例里的两张卡挂进容器。当前训练不走这个容器 |
+| `source /usr/local/Ascend/ascend-toolkit/set_env.sh`，然后装 `torchvision==0.25.0`、`torchaudio==2.10.0`、`triton-ascend==3.6.0`、`sglang==0.5.23`，`wget` 并安装 `sgl-kernel-npu` 的 wheel | 硬件页 Install the rest | 不执行 | 这些包已经在环境里，版本就是文档写的那些。再装一次会改掉已确认的环境。容器里的 `set_env.sh` 路径和本机的 `/home/pkg/cann920/ascend-toolkit/set_env.sh` 不是同一个文件 |
+| `pip install -e /path/to/miles`，再装 `transformers==5.19.0` 和 `numpy==1.26.4` | 同上 | 不执行 | miles 已按可编辑方式装上，这两个包的版本已经是文档里的版本 |
+| `source set_env.sh`，`python -c "import torch, torch_npu; ..."`，`npu-smi info` | 硬件页 Verify | 已跑 | 用的是本机那份 `set_env.sh`，不是容器路径。结果见下表 |
+| `prepare`、`sglang`、`train`、续跑、4 卡 | 硬件页 Launch，以及 `scripts/npu/README.md` | 见 V0–V4 | `prepare` 已过。其余未跑 |
+| `debug-data`、`debug-train` | `scripts/npu/README.md` 正文；启动器文件头有完整命令 | 见 V0、V1 | `debug-data` 已过。`debug-train` 未跑 |
+| `--extra-args "--update-weight-transfer-mode broadcast"` | 两篇文档的说明，不是独立步骤 | 不补跑 | 1 训练卡 + 1 引擎已经测过。2 引擎 broadcast 两篇都写明没跑 |
+
+不占卡的三条已经按文档跑过：
+
+| 命令 | 结果 |
+| --- | --- |
+| `prepare` | 退出码 0。默认路径是 `Qwen3.5-4B`、`dapo-math-17k.jsonl` |
+| `debug-data` | 退出码 0。写出 `debug-rollout/0.pt`，16 条样本 |
+| 硬件页 Verify | `torch 2.10.0+cpu`，`torch_npu 2.10.0.post7`，`torch.npu.is_available()` 为 True |
+
+2026-11-24 02:03 起按要求停跑。等卡的进程已停，`debug-train` 没有启动，没有占用别人的卡。当时 0–7 卡都在另一人的 4 机 8 卡基准里（`bench_w32_frontier_perf.py`，父进程 `torch.distributed.run --nnodes=4 --nproc_per_node=8`）。
+
+下面是文档里还要实际跑的实验。命令与 `scripts/npu/README.md`、`docs/hardware-platforms/ascend-npu.md` 一致。文档里的卡号 0、1、2、3 是写法；开跑前用 `npu-smi info` 换成当时空着的卡，数量不够就整条挂起，不杀已有进程。每条实验单独一个工作目录，里面只放两个符号链接，这样默认的 `checkpoints`、`weight-delta`、`rollout-checkpoint` 不会互相覆盖，也不会写进阶段 5 的 `checkpoints/` 或阶段 6 的 `checkpoints-stage6/`。一个 4B Adam 检查点约 51 GB，目录放在 `/home/weichunyu/miles-950`（NFS）。环境是 `miles-950-py312`，先 `source` CANN 的 `set_env.sh`。
+
+```bash
+mkdir -p "$dir" && cd "$dir"
+ln -sfn /mnt/weight/Qwen3.5-4B Qwen3.5-4B
+ln -sfn /mnt/share/dataset/dapo-math-17k/dapo-math-17k.jsonl dapo-math-17k.jsonl
+```
+
+| 编号 | 卡数 | 状态 | 做什么 | 通过标准 |
+| --- | --- | --- | --- | --- |
+| V0 | 0 | 已过 | `prepare`；硬件页 Verify（`import torch, torch_npu`，`npu-smi info`）；`debug-data` | 退出码 0。已见上表：`debug-rollout/0.pt` 有 16 条样本 |
+| V1 | 1 | 未跑 | `debug-train --trainer-device <空闲卡>`。不启 SGLang | 退出码 0，写出 `checkpoints/iter_0000001`。固定奖励，`train/loss` 和 `grad_norm` 为 0 |
+| V2 | 2 | 未跑 | 一个 shell：`sglang --engine-device <卡B>`。另一个 shell：`train --trainer-device <卡A> --engine-device <卡B>`。默认 3 个 rollout，disk-delta | 退出码 0。weight version 从 1 到 2、3。reward 日志是数字。写出 `iter_0000003`。不据此说策略变好了 |
+| V3 | 2 | 未跑 | V2 的引擎保持运行。`train --trainer-device <卡A> --engine-device <卡B> --num-rollout 4 --extra-args "--load checkpoints"` | 退出码 0。从 `iter_0000003` 载入模型、优化器和学习率，再跑 rollout 3，写出 `iter_0000004` |
+| V4 | 4 | 未跑 | `sglang --engine-device <卡C> --sglang-port 31001`；`sglang --engine-device <卡D> --sglang-port 31002`；`train --trainer-device <卡A>,<卡B> --engine-device <卡C>,<卡D>` | 退出码 0。FSDP `world_size` 2，两个引擎的拉权重都是 HTTP 200。写出 `iter_0000003` |
+
+建议目录：`doc-verify/debug-train`、`doc-verify/two-card`、`doc-verify/four-card`。V3 必须和 V2 用同一个目录。V1 不要和 V2 共用 `checkpoints`，否则 V3 的 `--load checkpoints` 会载到 debug 的 `iter_0000001`。
+
+跑的时候另外看这几条：
+
+- `debug-data` 按默认 4×4 写了 16 条；`debug-train` 内部把 batch 和 n 改成 2 和 2，全局 batch 是 4。V1 若因为条数对不上失败，就在 `debug-train` 目录里用 `--rollout-batch-size 2 --n-samples-per-prompt 2` 重写 `debug-data`，再跑 `debug-train`。
+- disk-delta 依赖当前环境里的 `/pull_weights`，不在 miles 的 diff 里。V2、V3、V4 开跑前确认这个路由还在。两个引擎共用一个 `rollout-checkpoint` 时，接收端必须记下已应用的版本；没有这条就给每个引擎单独的 `--local-checkpoint-dir`。
+- `broadcast` 不在这次必跑里。文档写的是 1 个训练卡加 1 个引擎已经测过，命令是 `--extra-args "--update-weight-transfer-mode broadcast"`。2 引擎的 broadcast 文档写明没跑，这次也不补。
+- 启动器会 `ray stop` 再 `ray start`，`graceful_ray_stop=True`，不会把另一边的 SGLang 杀掉。机器上已有别人的 Ray 时不要启动。端口 31001、31002 被占就换 `--sglang-port`，并让 `train` 用同一个端口。
+
+相对 `main`（`fa13e2ec`）的代码改动，必要性按「没有它这条路径会不会坏」来记。通用是指 CUDA 仍走原来的值，差异放在平台上，或者换一台 CUDA 机器跑同一模型、同一条 FSDP disk-delta 也会碰到。
+
+| 文件 | 必要 | 通用在哪 |
+| --- | --- | --- |
+| `miles/platforms/npu.py` | 必要。没有它就没有 `MILES_ACCELERATOR=npu` | NPU 自己的能力表。CUDA 不导入这个文件 |
+| `miles/platforms/__init__.py` | 必要。选择 NPU，并给基类 `process_group_backend`，CUDA 默认仍是 `nccl` | 和 TPU 的选择方式相同 |
+| `miles/backends/fsdp_utils/parallel.py` | 必要。mesh 原来写死 `cuda` | `current_platform.device_type`，CUDA 仍是 `cuda` |
+| `broadcast.py` | 必要，针对已测过的 HCCL broadcast。两边直接构造 backend，不经过 `torch_npu` 的 nccl→hccl 包装 | 后端名来自平台。CUDA 仍是 `nccl`。disk-delta 不走这里 |
+| `delta.py` | 必要。disk-delta 的同步和 device 原来写死 `torch.cuda` | `torch.accelerator`，CUDA 上就是 cuda |
+| `miles/utils/memory_utils.py` | 必要。这台 `torch_npu` 的缓存分配器不是 c10 `DeviceAllocator`，`torch.accelerator` 的显存接口会断言 | CUDA 仍走原来的成功路径，只有报 `not a DeviceAllocator` 才回退 |
+| `actor.py` 的设备与 `empty_cache` | 必要。否则模型放到 CUDA 设备上 | `current_platform` / `empty_cache` |
+| `precision.py` 的 dtype 对齐，以及 `actor.py` 里的那次调用 | 必要，原因是 Qwen3.5，不是 NPU。`from_pretrained` 把文件里的 fp32 收成 bf16，disk-delta 按原始字节对不上 | CUDA 上同一模型、同一条 FSDP disk-delta 也会被拒 |
+| `precision.py` 的 autocast | 必要，作为平台规则。这次默认精度策略没有走到它 | `current_platform.device_type`，CUDA 仍是 `cuda` |
+| `hf_weight_iterator.py` | 必要，原因是绑名。`lm_head.weight` 不在 safetensors 里 | 任何设备上用 disk-delta 导出这个模型都会被拒 |
+| `checkpoint.py` 的 `allow_partial_load` | 必要，原因是视觉塔。纯文本步没有它的 Adam 状态 | CUDA 上续跑这个模型同样过不了 |
+| `checkpoint.py` 加载失败后 `raise` | 必要，为了续跑失败时不要接着训。上游原来吞掉异常 | 任何设备的 FSDP 续跑都变成失败即中断 |
+| `checkpoint.py` 的 RNG 和 `synchronize` | 必要。`torch.cuda.get_rng_state_all` 在 NPU 上不可用 | CUDA 的 RNG 仍写在 `"cuda"` 键下 |
+| `miles/utils/arguments.py` | 必要。FSDP 和 Megatron 共用 tracker 文件名，disk-delta 原来一律拒绝 `--load` | 拒绝只留给 `train_backend == "megatron"`。CUDA 上的 FSDP disk-delta 续跑原来也会被拒 |
+| checkpoint 测试夹具的 `planner` | 必要，而且这个 `TypeError` 是我们加上 `planner` 之后才有的 | 只让假的 `dcp.load` 接住新参数 |
+| `tests/fast/utils/test_platforms.py` | 必要。锁住 NPU 的能力，并保证默认 CUDA 不导入 NPU 平台 | 不改 CUDA 的运行路径 |
+
+SGLang 侧不在 miles 的 diff 里。disk-delta 依赖装在环境里的 `/pull_weights` 接收端；`broadcast` 的 1+1 测量不依赖它。
