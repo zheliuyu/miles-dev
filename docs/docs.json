@@ -415,7 +415,8 @@
      "hardware-platforms/overview",
      "hardware-platforms/nvidia-gpus",
      "hardware-platforms/amd-gpus",
-     "hardware-platforms/google-tpus"
+     "hardware-platforms/google-tpus",
+     "hardware-platforms/ascend-npu"
     ]
    }
   ]

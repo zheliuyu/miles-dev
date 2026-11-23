@@ -8,14 +8,16 @@ each engine card is its own `sglang` process. Weights move from trainer to engin
 
 ## Environment
 
-The engine and the trainer share one Python 3.12 environment. The loop was tested with torch 2.10.0+cpu,
-torch_npu 2.10.0.post7, torchvision 0.25.0, torchaudio 2.10.0, triton-ascend 3.6.0, SGLang 0.5.23,
-sgl-kernel-npu 2026.11.0.post4, transformers 5.19.0, numpy 1.26.4, and CANN 9.2.0.
+The image and the packages installed on top of it are in the
+[Ascend NPU page](../../docs/hardware-platforms/ascend-npu.md#image). The base image is
+`ascendai/torch-npu:2.10.0.post7-cann9.2.0-950-openeuler24.03-py3.12` (CANN 9.2.0, Python 3.12,
+torch 2.10.0, torch_npu 2.10.0.post7). triton-ascend 3.6.0, SGLang 0.5.23, sgl-kernel-npu
+2026.11.0.post4, and Miles are installed afterwards.
 
-Activate that environment, and source CANN's `set_env.sh`, before running anything. `import torch` loads
-the `torch_npu` backend, which needs the CANN libraries; without them every subcommand fails with
-`ImportError: libhccl.so: cannot open shared object file`. `--help` is the exception: the launcher defers
-its torch import.
+Source CANN's `set_env.sh` before running anything. `import torch` loads the `torch_npu` backend,
+which needs the CANN libraries; without them every subcommand fails with
+`ImportError: libhccl.so: cannot open shared object file`. `--help` is the exception: the launcher
+defers its torch import.
 
 ## Run
 
@@ -69,11 +71,12 @@ uses a uniform reward, so `train/loss` and `grad_norm` are 0. The check covers t
 
 - **Pick free cards.** `npu-smi info` shows which cards have processes. The launcher writes only the ids
   you pass into `ASCEND_RT_VISIBLE_DEVICES`. Leave a card that already has a process alone.
-- **Two engines share one local checkpoint directory** and both apply the same xor delta. The second pull
-  of one version has to be a no-op. Stock SGLang 0.5.23 does not record the applied version, so a 2-engine
-  run needs a local `/pull_weights` change in the SGLang install: record the version under the existing
-  lock, skip a repeat, and refuse a gap. That change is outside Miles and disappears if SGLang is
-  reinstalled. Without it, give each engine its own `--local-checkpoint-dir`.
+- **disk-delta needs a `/pull_weights` handler in the SGLang install.** SGLang 0.5.23 does not ship one.
+  Version 0 copies the HF checkpoint into the engine-local directory, and later versions apply the zstd
+  deltas. Two engines that share that directory must record the applied version and skip a repeat, or the
+  second pull xors the same delta again. The handler is outside Miles and disappears if SGLang is
+  reinstalled. Without the shared-directory rule, give each engine its own `--local-checkpoint-dir`.
+  `broadcast` does not use this handler.
 - **One 4B Adam checkpoint is about 51 GB.** Point `--save-dir` at a filesystem that can hold it. Keep
   `--save-interval` at 3 or higher, and delete old `iter_*` directories after a run.
 - **`broadcast` is declared, and one trainer card plus one engine has been measured.** The launcher still
