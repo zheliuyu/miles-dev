@@ -13,6 +13,7 @@ from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadCon
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
 from miles.backends.training_utils.torch_native.step_runner import LinearStepRunner, StepMetrics
+from miles.platforms import current_platform
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.context_utils import with_defer
@@ -39,13 +40,6 @@ from .parallel import create_fsdp_parallel_state
 from .plugins.hf_kernels import HubKernels
 
 logger = logging.getLogger(__name__)
-
-
-def _accelerator_device() -> torch.device:
-    """The current accelerator device, valid on CUDA and NPU alike."""
-    accelerator = torch.accelerator.current_accelerator()
-    assert accelerator is not None, "no accelerator device is available"
-    return torch.device(accelerator.type, torch.accelerator.current_device_index())
 
 
 class FSDPTrainRayActor(TorchNativeTrainRayActor):
@@ -300,10 +294,10 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
         # Rank 0: move with weights, others: allocate empty tensors on device
         if dist.get_rank() == 0:
-            model = model.to(device=_accelerator_device(), non_blocking=True)
+            model = model.to(device=current_platform.current_device(), non_blocking=True)
         else:
             # to_empty creates tensors on device without initializing memory
-            model = model.to_empty(device=_accelerator_device())
+            model = model.to_empty(device=current_platform.current_device())
 
         is_cpu_offload = cpu_offload is not None
         options = StateDictOptions(full_state_dict=True, cpu_offload=is_cpu_offload, broadcast_from_rank0=True)
@@ -317,7 +311,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         if is_cpu_offload:
             model.to("cpu", non_blocking=True)
             for buf in model.buffers():
-                buf.data = buf.data.to(_accelerator_device())
+                buf.data = buf.data.to(current_platform.current_device())
 
         return model
 
@@ -341,7 +335,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             empty_cache()
             dist.barrier(group=get_gloo_group())
             if not self.optimizer_cpu_offload:
-                self.model.to(_accelerator_device())
+                self.model.to(current_platform.current_device())
                 dist.barrier(group=get_gloo_group())
 
     def _logprob_forward(self, model: torch.nn.Module, batch: dict) -> torch.Tensor:

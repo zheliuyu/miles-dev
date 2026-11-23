@@ -3,15 +3,13 @@
 Resolves the FSDP ``MixedPrecisionPolicy`` dtypes and whether to keep an fp32 master copy. The master copy is enabled by default for bit-exact weight sync and can be disabled for memory-constrained runs that only require forward accuracy.
 """
 
-import glob
-import json
-import os
-import struct
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
+from safetensors import safe_open
 
 # Safetensors header names for the dtypes a checkpoint may store per tensor. from_pretrained
 # follows config.dtype and can collapse these (Qwen3.5 keeps A_log and the GDN norm in fp32).
@@ -76,16 +74,12 @@ def apply_fp32_master(
 def _safetensors_dtypes(checkpoint_path: str) -> dict[str, torch.dtype]:
     """Per-tensor dtypes declared in the checkpoint files, before from_pretrained casts them."""
     dtypes = {}
-    for path in glob.glob(os.path.join(checkpoint_path, "*.safetensors")):
-        with open(path, "rb") as handle:
-            (header_len,) = struct.unpack("<Q", handle.read(8))
-            header = json.loads(handle.read(header_len))
-        for name, info in header.items():
-            if name == "__metadata__":
-                continue
-            dtype = _TORCH_DTYPE_BY_SAFETENSORS.get(info["dtype"])
-            if dtype is not None:
-                dtypes[name] = dtype
+    for path in sorted(Path(checkpoint_path).glob("*.safetensors")):
+        with safe_open(path, framework="pt", device="cpu") as tensors:
+            for name in tensors.keys():
+                dtype = _TORCH_DTYPE_BY_SAFETENSORS.get(tensors.get_slice(name).get_dtype())
+                if dtype is not None:
+                    dtypes[name] = dtype
     return dtypes
 
 

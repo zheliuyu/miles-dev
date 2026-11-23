@@ -17,8 +17,8 @@ class NpuPlatform(Platform):
     compile_backend = "eager"
     triton_kernels = False
     flex_attention = False
-    # HCCL's rooted reduce and PREMUL_SUM are unmeasured; reduce falls back to all_reduce.
-    rooted_reduce = False
+    # Probe B measured HCCL dist.reduce. PREMUL_SUM is unmeasured, so a non-default gradient divide stays on all_reduce.
+    rooted_reduce = True
     premul_sum_reduce = False
     # disk-delta is the default path. broadcast was measured on one trainer card and one engine: the HCCL group
     # came up and the engine accepted the tensors.

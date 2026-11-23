@@ -51,7 +51,7 @@ def test_npu_selects_the_torch_npu_platform(monkeypatch):
     assert platform.compile_backend == "eager"
     assert platform.triton_kernels is False
     assert platform.flex_attention is False
-    assert platform.rooted_reduce is False
+    assert platform.rooted_reduce is True
     assert platform.premul_sum_reduce is False
     assert platform.weight_transfer_modes == frozenset({"disk-delta", "broadcast"})
     assert platform.process_group_backend == "hccl"

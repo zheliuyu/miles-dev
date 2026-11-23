@@ -150,7 +150,7 @@ def load(actor: Any) -> dict[str, Any] | None:
                 planner=DefaultLoadPlanner(allow_partial_load=True),
             )
             logger.info(f"[FSDP] Loaded optimizer from {optimizer_dir}")
-        except BaseException as e:
+        except Exception as e:
             logger.warning(f"[FSDP] Failed to load optimizer from {optimizer_dir}: {e}")
             raise
     elif load_optimizer:
