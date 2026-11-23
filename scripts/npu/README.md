@@ -124,7 +124,7 @@ These are kept for the audit trail of the first 950DT run, not for upstream:
 
 | Path | What |
 | --- | --- |
-| `docs/hardware-platforms/ascend-npu-run-record.md` | the full run record: hardware facts, why the in-tree NPU patch is unusable, the chosen route, probes, commits, stage-4 result, remaining plan |
+| `docs/hardware-platforms/ascend-npu-run-record.md` | the full run record: hardware facts, why the in-tree NPU patch is unusable, the chosen route, probes, commits, stage-4 and stage-5 results, remaining plan |
 | `scripts/npu/probes/` | the probe A/B/C/D scripts and the debug-training launcher as they were run |
 | `scripts/npu/legacy/run_qwen3_5_4b_npu.py` | the earlier draft launcher (previous host), superseded by `run_qwen3_5_4b_fsdp.py` |
 | `scripts/npu/evidence/` | build logs, probe logs, and the stage-4 checkpoint metadata plus step metrics |

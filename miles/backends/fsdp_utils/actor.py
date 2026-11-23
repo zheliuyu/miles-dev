@@ -18,6 +18,7 @@ from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENA
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.memory_utils import empty_cache
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.replay_base import routing_replay_manager
 from miles.utils.timer import Timer
@@ -25,7 +26,12 @@ from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.workers.rpc.common.wire_types import Pickled
 
 from .adaptations.config_checks import validate_hf_config
-from .adaptations.precision import apply_fp32_master, default_precision_policy, precision_forward_context
+from .adaptations.precision import (
+    align_sync_dtypes_to_checkpoint,
+    apply_fp32_master,
+    default_precision_policy,
+    precision_forward_context,
+)
 from .adaptations.specs import resolve_arch_adapter
 from .hf_weight_iterator import FSDPHfWeightIterator
 from .lr_scheduler import get_lr_scheduler
@@ -220,6 +226,11 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         self.hub_kernels.bind(model)
         if keep_fp32_master:
             model = apply_fp32_master(model, self.precision_policy.sync_dtype_resolver)
+            corrected = align_sync_dtypes_to_checkpoint(model, checkpoint_path)
+            if corrected:
+                logger.info(
+                    f"[Rank {dist.get_rank()}] Restored {corrected} weight-sync dtypes from {checkpoint_path}"
+                )
         return model
 
     def _build_model_with_attn_bridge(self, checkpoint_path: str, init_context):
@@ -321,13 +332,13 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
         if not self.optimizer_cpu_offload:
             self.model.cpu()
-            torch.accelerator.empty_cache()
+            empty_cache()
             dist.barrier(group=get_gloo_group())
         self.ref_model.eval()
         try:
             yield
         finally:
-            torch.accelerator.empty_cache()
+            empty_cache()
             dist.barrier(group=get_gloo_group())
             if not self.optimizer_cpu_offload:
                 self.model.to(_accelerator_device())

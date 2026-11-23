@@ -1,9 +1,8 @@
 # miles-dev 在 Ascend 950DT 上的支持度与接入记录
 
-> 本地执行记录（2026-11-20，由 5 份快照合并而成）。**提交 PR 前删除本文件。** 执行脚本见 `scripts/npu/probes/`，构建与探针日志见 `scripts/npu/evidence/`。
+> 本地执行记录（探针与阶段 4 写于 2026-11-20，阶段 5 闭环写于 2026-11-23）。**提交 PR 前删除本文件。** 执行脚本见 `scripts/npu/probes/`，构建与探针日志见 `scripts/npu/evidence/`。
 
-分析对象：`/home/weichunyu/miles-dev`，基线 HEAD `fa13e2ec`（`fix(rocm): repair async output-store capacity and cleanup`），
-本地分支 `feat/ascend-950-support`，上游 `radixark/miles`，fork `zheliuyu/miles-dev`。
+分析对象：`/home/weichunyu/miles-dev`。记录开始时的基线是 `fa13e2ec`。平台与启动器提交到 `eaa238ab`，这一点相对 `radixark/miles` 的 `main` 超前 7、落后 32。fork 是 `zheliuyu/miles-dev`。
 
 本文是单份执行记录：硬件事实、为什么不用仓库自带补丁、选定的接入方式、环境与验证、已落地的改动、剩余阶段。
 
@@ -18,8 +17,8 @@
 | 探针 D（SGLang 生成） | ✅ | NPU 1 起服务，返回「1+1 等于 2。」，14 tokens |
 | 阶段 3 平台对象 | ✅ 已提交 | 5 个 CPU 单测通过；`MILES_ACCELERATOR=npu` → npu/eager/disk-delta |
 | 阶段 4 纯训练 | ✅ | debug 数据 4 步，20.5 s，checkpoint 落盘（51 GB） |
-| 阶段 5 闭环 | ⬜ | 需要 2 张空闲卡 |
-| 阶段 6 扩 4 卡 / 阶段 7 提 PR | ⬜ | 依赖阶段 5 |
+| 阶段 5 闭环 | ✅ | 3 个 rollout 退出码 0，weight version 1→2→3；从 `iter_0000003` 续跑 rollout 3，退出码 0，写出 `iter_0000004`。见 §9 |
+| 阶段 6 扩 4 卡 / 阶段 7 提 PR | ⬜ | 阶段 5 已不再挡住；4 卡启动器和 HCCL `broadcast` 都还没做 |
 
 ## 1. 机器事实（2026-11-20 实测）
 
@@ -31,7 +30,7 @@
 | 驱动 / 固件 | HDK `25.1.rc3`，固件 `9.2.0.101.235`，`npu-smi 25.1.rc3` |
 | CANN | 系统自带 `/usr/local/Ascend/cann-9.2.0`（另有 `cann-9.2.0-dsv-20261030`）；训练环境统一 source `/home/pkg/cann920/cann-9.2.0` |
 | base Python | 3.12.14 |
-| 磁盘 | `/` 97% 使用，约 122 GB 可用（一个 checkpoint 占 51 GB，见 §8） |
+| 磁盘 | 一个 checkpoint 约 51 GB。工作目录 `/home/weichunyu/miles-950` 是指向 `/mnt/share/weichunyu/miles-950` 的符号链接（NFS，百 TB 级空闲）。checkpoint 与 `weight-delta` 必须留在这条路径上，不能写回根分区 |
 | 选卡 | 卡是动态的：跑之前先 `npu-smi info`，再用 `ASCEND_RT_VISIBLE_DEVICES` 钉住，**不杀别人的进程** |
 
 ## 2. 为什么不用仓库自带的 NPU 补丁
@@ -57,7 +56,7 @@
 | --- | --- |
 | 直接 `pip install` 后按 CUDA 配方训练 | 不可用（无 NPU 设备后端）；本次已补上 `MILES_ACCELERATOR=npu` |
 | 套用 `docker/npu_patch` | 不可用：补丁锁在 CANN 8.5 / Python 3.11 / torch-npu 2.8 / 910 代 |
-| 中小模型 RL（4B、2 卡） | 可用：探针 A–D 与阶段 4 已验证 |
+| 中小模型 RL（4B、2 卡） | 可用：探针 A–D、阶段 4，以及阶段 5 的 GRPO 闭环与 checkpoint 续跑已验证。reward 接近 0，回答大多顶到 1024 截断 |
 | 8 卡满配、千亿级、README 里的前沿模型 | 没有对应实现，也不在本轮范围 |
 | 修改系统 CANN / 系统 Python | 不做；训练环境自带 CANN 9.2.0 与 conda 环境 |
 
@@ -154,15 +153,29 @@ python -m sglang.launch_server \
 
 ## 7. 已落地的代码改动
 
-分支 `feat/ascend-950-support`（本地，未推送），五个提交：
+分支 `feat/ascend-950-support`。到 `eaa238ab` 为止是平台、启动器和记录本身（相对 `radixark/miles:main` 超前 7、落后 32）：
 
 | 提交 | 内容 |
 | --- | --- |
-| `085d3d8a` | `feat(npu)`：新增 `miles/platforms/npu.py` 与 `MILES_ACCELERATOR=npu` 选择，含 4 个 CPU 单测 |
+| `085d3d8a` | `feat(npu)`：新增 `miles/platforms/npu.py` 与 `MILES_ACCELERATOR=npu` 选择，含 CPU 单测 |
 | `483d20e8` | `fix(weight-update)`：disk-delta 里 `torch.cuda.current_stream / current_device` 改 `torch.accelerator` |
 | `dd7140ef` | `fix(fsdp)`：actor/checkpoint 的 `current_device`、`empty_cache`、`synchronize`、RNG 改 `torch.accelerator` |
 | `158f554c` | `fix(fsdp)`：`init_device_mesh` 的 `"cuda"` 改 `current_platform.device_type`（否则 `torch._C._cuda_setDevice` 崩） |
 | `4aa155c9` | `docs(npu)`：新增 `scripts/npu/run_qwen3_5_4b_fsdp.py` 与 `scripts/npu/README.md` |
+| `fa8409a3` | 本记录、探针与阶段 4 证据 |
+| `eaa238ab` | 文档里的提交哈希改写成上面这一列 |
+
+阶段 5 为了把闭环跑通，又改了下面这些共享路径。没有这些修改，§9 的两次任务都会在中途退出：
+
+| 文件 | 原因 |
+| --- | --- |
+| `miles/utils/memory_utils.py`、`miles/backends/fsdp_utils/actor.py` | 本机 `torch.accelerator` 的显存接口报 `Allocator for npu is not a DeviceAllocator`，改走 `torch.npu` |
+| `miles/backends/fsdp_utils/adaptations/precision.py`、`actor.py` | `from_pretrained` 按 `config.dtype=bfloat16` 把 48 个文件里的 fp32 张量（GDN 的 `A_log`、`norm.weight`）转成 bf16，disk-delta 基线校验失败 |
+| `miles/backends/fsdp_utils/hf_weight_iterator.py` | `tie_word_embeddings` 使 `state_dict` 带上 `lm_head.weight`，safetensors 里没有这个名字 |
+| `miles/utils/arguments.py` | disk-delta 把带 `latest_checkpointed_iteration.txt` 的 `--load` 一律拒绝；FSDP 也写这个文件。拒绝只保留给 Megatron |
+| `miles/backends/fsdp_utils/checkpoint.py` | 纯文本步不会给视觉塔留下 Adam 状态，空优化器加载时却为每个可训练参数建状态。优化器加载改为 `allow_partial_load` |
+
+另外，库存 SGLang 0.5.23 没有 `/pull_weights`。接收端是环境里的本地补丁（`sglang_npu_pull_weights.py` 以及 `http_server.py` 上的路由），不在本仓库。重装 SGLang 会丢掉它。
 
 `NpuPlatform` 的取值：`device_type=npu`、`compile_backend=eager`、`triton_kernels=False`、`flex_attention=False`、
 `dynamic_shapes=False`、`nvml_numa_affinity=False`、`rooted_reduce=False`、`premul_sum_reduce=False`、
@@ -186,33 +199,32 @@ Ray 资源不需要改 `miles/ray/*`：`execute_train` 会执行 `ray start --nu
 - checkpoint 写到 `checkpoints/iter_0000001`：model 20 GB + optimizer 32 GB（Adam fp32）+ `rng.pt` / `lr_scheduler`，
   **合计 51 GB**，`meta.json` 记录 `iteration=1, next_rollout_id=1, world_size=1`。
 
-## 9. 剩余工作
+## 9. 阶段 5 结果与剩余工作
 
-### 阶段 5：接上 rollout，完成一次闭环
+### 阶段 5：闭环（2026-11-23，已通过）
 
-```bash
-# 一张卡起引擎（前台），另一张卡训练
-python scripts/npu/run_qwen3_5_4b_fsdp.py sglang --engine-device <空闲卡 A>
-python scripts/npu/run_qwen3_5_4b_fsdp.py train  --trainer-device <空闲卡 B>
-```
+引擎在 5 卡，端口 31001。第一次训练在 6 卡，任务 `raysubmit_t48Pmq7NdnZ1bTNa`，15:46 退出码 0，写出 `iter_0000003`（51 GB，`next_rollout_id=3`）。配方就是上一节的 3 个 rollout、batch 4、每题 4 条、回答上限 1024、`disk-delta`、评估关闭。`--update-weight-disk-dir` 与 `--update-weight-local-checkpoint-dir` 由 `--extra-args` 传入，分别指向 `/home/weichunyu/miles-950/weight-delta` 和 `rollout-checkpoint`。
 
-`train` 侧关键项：`--train-backend fsdp`、`--distributed-backend hccl`、`--rollout-num-gpus 1`、
-`--update-weight-transfer-mode disk-delta`、`--advantage-estimator grpo`、`--rm-type math`、
-`--num-rollout 3 --rollout-batch-size 4 --n-samples-per-prompt 4 --rollout-max-response-len 1024`、评估先关闭。
-磁盘中转目录用 `/home/weichunyu/miles-950/weight-delta`（不要 `/tmp`）。
+| 轮次 | 采样 | 训练 | 送回引擎 |
+| --- | --- | --- | --- |
+| 训练前 | — | — | version 1，变更 0% |
+| rollout 0 | 16/16，回答长度 1005，截断 0.875，reward 0 | step 0，`grad_norm` 1.26，`loss` 0 | version 2，1.58%，0.34 GB |
+| rollout 1 | 16/16，回答长度 1016，截断 0.938，reward 约 0 | step 1，`grad_norm` 1.19 | version 3，1.25%，0.28 GB |
+| rollout 2 | 16/16，回答长度 928，截断 0.75，reward 0 | step 2，`grad_norm` 0，`loss` 0 | 没有再发一版；权重留在 checkpoint |
 
-通过标准：3 个 rollout 结束且退出码 0；第 2、3 轮 weight version 大于第 1 轮；reward 日志有数值（不要求上升）；
-杀掉训练进程后用同一 checkpoint 重启，能再完成 1 个 rollout。
+第 2、3 次送回的 version（2 和 3）都大于第 1 次（1）。rollout 2 更新后的权重在 `iter_0000003` 里，进程退出前没有打成 version 4。
 
-注意事项：`--save-interval` 保持 3 或更大（一个 checkpoint 51 GB，当前只剩约 122 GB）；
-引擎端口 `--sglang-port` 两端一致（默认 31001）。
+续跑在 4 卡，任务 `raysubmit_V1rAisPxAQdVumd3`，`--load /home/weichunyu/miles-950/checkpoints --num-rollout 4`，17:26 退出码 0。模型、优化器、学习率调度器从 `iter_0000003` 载入，rollout 进度从 `checkpoints/rollout/2` 接上。新进程的 disk-delta 版本从 1 重新计，这一版相对原始 HF 权重变更 2.22%、0.45 GB，引擎回报 200。rollout 3：16/16，回答长度 1024，截断 1.0，reward 0，`weight_version` 1；step 3 的 `loss` 与 `grad_norm` 都是 0。随后写出 `iter_0000004`（`rollout_id=3`，`next_rollout_id=4`）。
+
+四条通过标准都有结果：3 个 rollout 退出码 0；后续送回的 weight version 高于第一版；reward 日志有数值；同一 checkpoint 再完成 1 个 rollout。reward 没有上升，回答大多顶到 1024。这证明的是采样、打分、更新、回传、续跑这条链，不是策略变好了。
 
 ### 阶段 6：扩到 4 张空闲卡
 
-训练用 0、1（FSDP DP=2），rollout 用 2、3（两个 SGLang 引擎，各 1 卡），仍用 `disk-delta`；
-通过标准同阶段 5，设备列表换成 `0,1,2,3`。之后单独做一次实验，把 `--update-weight-transfer-mode broadcast`
-接到 HCCL，比较一次权重更新的耗时；`broadcast` 更快就写成推荐方式，`disk-delta` 留作退路，
-并同步改 `NpuPlatform.weight_transfer_modes`。
+原计划：训练用两张卡（FSDP DP=2），rollout 用另外两张卡（两个 SGLang，各 1 卡），仍用 `disk-delta`；通过标准同阶段 5。卡号按开跑时的 `npu-smi` 现选，不预留 0、1、2、3。
+
+这一步还不能直接开。当前启动器把训练和引擎都钉成一张卡（`--actor-num-gpus-per-node 1`，一个 `--sglang-port`）。`broadcast` 也还不是把传输模式改成 HCCL 就行：`miles/backends/training_utils/weight_update/protocols/broadcast.py` 把进程组建在 `backend="nccl"` 上，`NpuPlatform.weight_transfer_modes` 仍只有 `disk-delta`。4 卡闭环先继续用 `disk-delta`；`broadcast` 单独做，测完再决定要不要写进平台类。
+
+阶段 5 还说明两件和规模无关的事，4 卡跑不掉：上面那些共享路径修复要留在这棵树上；两个引擎都依赖环境内的 `/pull_weights` 补丁。reward 仍不作为通过条件。
 
 ### 阶段 7：PR 拆分（目标 `radixark/miles` 的 `main`）
 
@@ -238,7 +250,7 @@ PR 说明附本机日志（探针 A/B/C/D、rollout 的 loss/reward、`npu-smi` 
 | 9.1 的 `sgl-kernel-npu` 在 9.2.0 上加载失败 | 导入与 Gemma RMSNorm 已通过；某算子失败则用 `/home/pkg/cann920/cann-9.2.0` 按 `Ascend950PR_9599` 重编，编不过就停 |
 | 训练出现未实现算子 | 记算子名/shape/CANN 报错；能用 PyTorch 组合替代就替代并加数值对照，不能就缩短序列，不改模型结构 |
 | HCCL 超时或挂起 | 端到端继续用 `disk-delta` + 单卡训练，集合通信不作为闭环前提 |
-| 磁盘低于 100 GB | 停下载与 checkpoint，先清 `iter_*` 与 `weight-delta` |
+| checkpoint 写进根分区 | 停。只写 `/home/weichunyu/miles-950`（NFS 符号链接）；一个 `iter_*` 约 51 GB |
 | 目标卡被别人占用 | 换仍空闲的卡并改 `ASCEND_RT_VISIBLE_DEVICES`，不杀已有进程 |
 | 共享代码里出现新的 CUDA 调用 | 按多硬件规则改到 `current_platform` / `torch.accelerator`；一处调用要扩成大段 `if npu` 时，把差异收回 `NpuPlatform` |
 

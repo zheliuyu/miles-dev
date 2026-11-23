@@ -1625,7 +1625,9 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."
         )
-        if has_megatron_checkpoint(
+        # FSDP writes the same tracker file Megatron does. The actor loads that checkpoint
+        # before the first disk-delta sync, and that sync republishes the loaded weights.
+        if getattr(args, "train_backend", "megatron") == "megatron" and has_megatron_checkpoint(
             args.requested_load,
             ckpt_step=(
                 getattr(args, "ckpt_step", None) if args.load == args.requested_load else None

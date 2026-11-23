@@ -3,11 +3,30 @@
 Resolves the FSDP ``MixedPrecisionPolicy`` dtypes and whether to keep an fp32 master copy. The master copy is enabled by default for bit-exact weight sync and can be disabled for memory-constrained runs that only require forward accuracy.
 """
 
+import glob
+import json
+import os
+import struct
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
 
 import torch
+
+# Safetensors header names for the dtypes a checkpoint may store per tensor. from_pretrained
+# follows config.dtype and can collapse these (Qwen3.5 keeps A_log and the GDN norm in fp32).
+_TORCH_DTYPE_BY_SAFETENSORS = {
+    "F32": torch.float32,
+    "BF16": torch.bfloat16,
+    "F16": torch.float16,
+    "F64": torch.float64,
+    "I64": torch.int64,
+    "I32": torch.int32,
+    "I16": torch.int16,
+    "I8": torch.int8,
+    "U8": torch.uint8,
+    "BOOL": torch.bool,
+}
 
 
 @dataclass
@@ -52,3 +71,37 @@ def apply_fp32_master(
     model = model.to(torch.float32)
     model._fsdp_sync_dtypes = sync_dtypes
     return model
+
+
+def _safetensors_dtypes(checkpoint_path: str) -> dict[str, torch.dtype]:
+    """Per-tensor dtypes declared in the checkpoint files, before from_pretrained casts them."""
+    dtypes = {}
+    for path in glob.glob(os.path.join(checkpoint_path, "*.safetensors")):
+        with open(path, "rb") as handle:
+            (header_len,) = struct.unpack("<Q", handle.read(8))
+            header = json.loads(handle.read(header_len))
+        for name, info in header.items():
+            if name == "__metadata__":
+                continue
+            dtype = _TORCH_DTYPE_BY_SAFETENSORS.get(info["dtype"])
+            if dtype is not None:
+                dtypes[name] = dtype
+    return dtypes
+
+
+def align_sync_dtypes_to_checkpoint(model, checkpoint_path: str) -> int:
+    """Point outbound weight sync at the checkpoint file dtype.
+
+    ``from_pretrained`` applies ``config.dtype`` and can turn an fp32 tensor into bf16 before
+    ``apply_fp32_master`` records it. Disk-delta then rejects the publish, because it diffs raw
+    safetensors bytes. Returns how many recorded dtypes were corrected.
+    """
+    sync_dtypes = getattr(model, "_fsdp_sync_dtypes", None)
+    if not sync_dtypes:
+        return 0
+    corrected = 0
+    for name, dtype in _safetensors_dtypes(checkpoint_path).items():
+        if name in sync_dtypes and sync_dtypes[name] != dtype:
+            sync_dtypes[name] = dtype
+            corrected += 1
+    return corrected
