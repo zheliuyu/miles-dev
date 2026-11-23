@@ -41,6 +41,8 @@ The defaults point at data that already exists on this host, so `prepare` normal
 | `--rollout-batch-size` / `--n-samples-per-prompt` | `4` / `4` | 16 samples per rollout |
 | `--save-dir` | `/home/weichunyu/miles-950/checkpoints` | checkpoint root |
 | `--save-interval` | `3` | save every N rollouts (see **Disk**) |
+| `--weight-disk-dir` | `/home/weichunyu/miles-950/weight-delta` | shared disk-delta directory; `train` passes it as `--update-weight-disk-dir` |
+| `--local-checkpoint-dir` | `/home/weichunyu/miles-950/rollout-checkpoint` | engine-local checkpoint; `train` passes it as `--update-weight-local-checkpoint-dir` |
 | `--debug-data-dir` | `/home/weichunyu/miles-950/debug-rollout` | where `debug-data` writes `0.pt` |
 | `--extra-args` | empty | extra `train.py` flags, appended last |
 

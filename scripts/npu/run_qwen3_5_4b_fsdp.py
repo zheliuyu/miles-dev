@@ -1,8 +1,8 @@
-"""Qwen3.5-4B GRPO on one Ascend 950DT host: FSDP trainer on one card, SGLang on another.
+"""Qwen3.5-4B GRPO on one Ascend 950DT host: FSDP trainer and external SGLang.
 
-The two jobs are separate processes that the launcher pins with ASCEND_RT_VISIBLE_DEVICES: the trainer sees only
-`--trainer-device` and drives an external SGLang engine on `--engine-device`. Weights return through the disk-delta
-protocol (NpuPlatform.weight_transfer_modes), the same way the TPU launcher returns them over ICI.
+The jobs are separate processes that the launcher pins with ASCEND_RT_VISIBLE_DEVICES. `--trainer-device` and
+`--engine-device` each take one card (`6`) or a comma-separated list (`2,3`). One `sglang` process serves one
+card; start one process per engine card. Weights return through disk-delta.
 
 Run `prepare` once (it only checks the local model and dataset, no download when they already exist), then `sglang`
 in its own shell (it stays in the foreground), then `train`. `debug-data` + `debug-train` run the FSDP trainer alone
@@ -57,6 +57,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     save_dir: str = "/home/weichunyu/miles-950/checkpoints"
     # one 4B checkpoint costs ~51 GB (20 GB model + 32 GB Adam fp32 state), and the root disk is tight
     save_interval: int = 3
+    # disk-delta refuses to start without both directories; keep them on the NFS work dir, not /tmp
+    weight_disk_dir: str = "/home/weichunyu/miles-950/weight-delta"
+    local_checkpoint_dir: str = "/home/weichunyu/miles-950/rollout-checkpoint"
     debug_data_dir: str = "/home/weichunyu/miles-950/debug-rollout"
     extra_args: str = ""
     # the engine runs in its own shell; a run must not SIGKILL it, which the backend's default cleanup does
@@ -68,11 +71,20 @@ def _require(path: str, what: str) -> None:
         raise typer.BadParameter(f"{what} not found: {path}")
 
 
+def _cards(value: str) -> list[str]:
+    cards = [part.strip() for part in value.split(",") if part.strip()]
+    if not cards or any(not card.isdigit() for card in cards):
+        raise typer.BadParameter(f"expected comma-separated card ids, got {value!r}")
+    return cards
+
+
 def _trainer_env(args: ScriptArgs) -> dict[str, str]:
     return {
         "MILES_ACCELERATOR": "npu",
-        # the trainer must see exactly one card; Ray schedules the worker onto a synthetic GPU slot, the mask is ours
-        "ASCEND_RT_VISIBLE_DEVICES": args.trainer_device,
+        # Ray's GPU slot is synthetic. This mask is the physical cards, in local-rank order.
+        "ASCEND_RT_VISIBLE_DEVICES": ",".join(_cards(args.trainer_device)),
+        # Ray must not pin CUDA_VISIBLE_DEVICES to one id: that collapses every rank's local id to 0.
+        "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
         # 950 multimodal attention backend selection, same as the working probe D launch
         "ASCEND_USE_FIA": "1",
         # skips the launcher's nvidia-smi probe, exactly as the TPU launcher does
@@ -125,18 +137,22 @@ def _train_backend_args(args: ScriptArgs) -> str:
 
 
 def _misc_args(args: ScriptArgs) -> str:
+    trainer_cards = len(_cards(args.trainer_device))
     return (
         "--actor-num-nodes 1 "
-        "--actor-num-gpus-per-node 1 "
-        "--num-gpus-per-node 1 "
+        f"--actor-num-gpus-per-node {trainer_cards} "
+        f"--num-gpus-per-node {trainer_cards} "
         f"--save {args.save_dir} "
         f"--save-interval {args.save_interval} "
     )
 
 
 def serve_sglang(args: ScriptArgs) -> None:
-    """Serve the policy on the engine card in the foreground."""
-    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = args.engine_device
+    """Serve the policy on one engine card in the foreground."""
+    cards = _cards(args.engine_device)
+    if len(cards) != 1:
+        raise typer.BadParameter("sglang serves one card; start one process per engine card")
+    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = cards[0]
     os.environ["ASCEND_USE_FIA"] = "1"
     argv = [
         sys.executable,
@@ -241,7 +257,7 @@ def _execute(args: ScriptArgs, train_args: str) -> None:
     backend = args.create_backend()
     backend.execute_train(
         train_args=train_args,
-        num_gpus_per_node=1,
+        num_gpus_per_node=len(_cards(args.trainer_device)),
         megatron_model_type=None,
         train_script=str(Path(__file__).resolve().parents[2] / "train.py"),
         extra_env_vars=_trainer_env(args),
@@ -306,6 +322,10 @@ def train(args: ScriptArgs):
     _require(args.model_path, "model")
     _require(args.data_path, "dataset")
     os.environ.setdefault("NCCL_NVLS_ENABLE", "0")
+    engine_cards = _cards(args.engine_device)
+    engine_addrs = " ".join(
+        f"http://127.0.0.1:{args.sglang_port + index}" for index in range(len(engine_cards))
+    )
     train_args = " ".join(
         [
             f"--hf-checkpoint {args.model_path}",
@@ -313,10 +333,12 @@ def train(args: ScriptArgs):
             "--rm-type math",
             f"--num-rollout {args.num_rollout}",
             _recipe_args(args),
-            f"--rollout-external-engine-addrs http://127.0.0.1:{args.sglang_port}",
-            "--rollout-num-gpus 1",
+            f"--rollout-external-engine-addrs {engine_addrs}",
+            f"--rollout-num-gpus {len(engine_cards)}",
             "--rollout-num-gpus-per-engine 1",
             f"--update-weight-transfer-mode {WEIGHT_TRANSFER_MODE}",
+            f"--update-weight-disk-dir {args.weight_disk_dir}",
+            f"--update-weight-local-checkpoint-dir {args.local_checkpoint_dir}",
             _train_backend_args(args),
             _misc_args(args),
             args.extra_args,
