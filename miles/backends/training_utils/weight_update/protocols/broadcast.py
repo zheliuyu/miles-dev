@@ -14,6 +14,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.utils.data_replica import get_data_replica_rank_and_size
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
+from miles.platforms import current_platform
 from miles.utils import async_utils
 from miles.utils.distributed_lock import create_world_ticket_lock
 from miles.utils.distributed_utils import init_process_group
@@ -109,6 +110,7 @@ def connect_rollout_engines_from_distributed(
 
     futures = []
     rank_cursor = 1
+    backend = current_platform.process_group_backend
     for i, api_client in enumerate(rollout_engines):
         futures.append(
             async_utils.submit(
@@ -118,13 +120,13 @@ def connect_rollout_engines_from_distributed(
                     rank_cursor,
                     world_size,
                     group_name,
-                    backend="nccl",
+                    backend=backend,
                 )
             )
         )
         rank_cursor += engine_gpu_counts[i]
     model_update_groups = init_process_group(
-        backend="nccl",
+        backend=backend,
         init_method=f"tcp://{master_address}:{master_port}",
         world_size=world_size,
         rank=0,

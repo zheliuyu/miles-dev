@@ -1,9 +1,11 @@
 # miles on Ascend 950DT (NPU)
 
-GRPO training on one Ascend 950DT host. The FSDP trainer runs as one rank on one card and drives an **external**
-SGLang server on another card. The two jobs are separate processes, each pinned by its own
-`ASCEND_RT_VISIBLE_DEVICES`; weights travel trainer → engine through `--update-weight-transfer-mode disk-delta`
-(the only mode `NpuPlatform` declares).
+GRPO training on one Ascend 950DT host. The FSDP trainer and the SGLang server are separate processes, each pinned
+by its own `ASCEND_RT_VISIBLE_DEVICES`. The default is one trainer card and one engine card. Comma-separated ids
+run more than one of each: the trainer list is the FSDP world size, and each engine card is its own `sglang`
+process. Weights travel trainer → engine through `--update-weight-transfer-mode disk-delta` (the launcher
+default). `NpuPlatform` also declares `broadcast`; pass it with `--extra-args` after the HCCL group has been
+measured on the target cards.
 
 This mirrors `scripts/tpu/`, which does the same thing on TPU with an external engine and ICI weight sync.
 
@@ -33,9 +35,9 @@ The defaults point at data that already exists on this host, so `prepare` normal
 | --- | --- | --- |
 | `--model-path` | `/mnt/weight/Qwen3.5-4B` | local HF checkpoint; 4.21B params, bf16 |
 | `--data-path` | `/mnt/share/dataset/dapo-math-17k/dapo-math-17k.jsonl` | prompt dataset for the rollout data source |
-| `--trainer-device` | `0` | physical Ascend card for the FSDP trainer |
-| `--engine-device` | `1` | physical Ascend card for the SGLang server |
-| `--sglang-port` | `31001` | engine port; `train` connects to `http://127.0.0.1:<port>` |
+| `--trainer-device` | `0` | physical Ascend cards for the FSDP trainer, comma-separated; the count is the world size |
+| `--engine-device` | `1` | physical Ascend cards for SGLang; `sglang` accepts one id, `train` accepts a list |
+| `--sglang-port` | `31001` | first engine port; `train` connects to `http://127.0.0.1:<port+i>` in `--engine-device` order |
 | `--seq-length` | `2048` | becomes `--max-tokens-per-gpu` and sizes the engine's context |
 | `--num-rollout` | `3` | closed-loop rollouts |
 | `--rollout-batch-size` / `--n-samples-per-prompt` | `4` / `4` | 16 samples per rollout |
@@ -64,7 +66,21 @@ python scripts/npu/run_qwen3_5_4b_fsdp.py debug-train --trainer-device 1
 # 2. the closed loop: engine on one card, trainer on another
 python scripts/npu/run_qwen3_5_4b_fsdp.py sglang --engine-device 7     # keep this shell open
 python scripts/npu/run_qwen3_5_4b_fsdp.py train  --trainer-device 1    # other shell
+
+# 3. four cards: two trainer ranks, two engine processes. ports follow engine-device order
+python scripts/npu/run_qwen3_5_4b_fsdp.py sglang --engine-device 5 --sglang-port 31001
+python scripts/npu/run_qwen3_5_4b_fsdp.py sglang --engine-device 6 --sglang-port 31002
+python scripts/npu/run_qwen3_5_4b_fsdp.py train --trainer-device 3,7 --engine-device 5,6
 ```
+
+`sglang` rejects a list. Start one process per engine card, and pass that process the port `train` will dial
+(`--sglang-port` plus the card's index in `--engine-device`).
+
+Two engines are given the same `--update-weight-local-checkpoint-dir` and both apply the xor delta. The second
+pull of one version has to be a no-op. Stock SGLang 0.5.23 does not remember the applied version, so a 2-engine
+run needs a local `/pull_weights` change in the SGLang install (record the version under the existing lock, skip
+a repeat, refuse a gap). That change is not part of Miles and disappears if SGLang is reinstalled. Without it,
+give each engine its own local directory.
 
 Pick free cards first:
 
@@ -97,15 +113,17 @@ One 4B checkpoint costs **~51 GB** (Adam keeps fp32 exp-avg/exp-avg-sq). The roo
 ## What differs from the CUDA recipe
 
 - `MILES_ACCELERATOR=npu` selects `miles.platforms.npu.NpuPlatform`: eager compile backend, no Triton kernels, no
-  flex attention, `disk-delta` weight transfer only, bf16 rollout KV cache, and the device is bound *before* the
-  process group because HCCL reads it at `init_process_group` (TPU binds after).
+  flex attention, `disk-delta` and `broadcast` as the declared weight-transfer modes, `process_group_backend=hccl`
+  for the broadcast group, bf16 rollout KV cache, and the device is bound *before* the process group because HCCL reads it at
+  `init_process_group` (TPU binds after).
 - `--distributed-backend hccl`; CPU offload stays off, so the backend never becomes `cpu:gloo,npu:hccl`.
 - The engine needs `ASCEND_USE_FIA=1`, `--device npu --attention-backend ascend`, `--mamba-ssm-dtype bfloat16`
   (Mamba state must match the bf16 keys, otherwise `chunk_gated_delta_rule` rejects it), and the 950
   `sgl-kernel-npu` wheel for Qwen3.5-4B's GDN and Gemma RMSNorm kernels.
-- **Ray is not asked for an `NPU` resource.** The launcher's `ray start --num-gpus 1` declares a synthetic GPU slot,
-  exactly as the TPU launcher does, so `miles/ray/*` needs no change; the price is that Ray no longer sets
-  `ASCEND_RT_VISIBLE_DEVICES` per worker, which is why each job sets its own mask.
+- **Ray is not asked for an `NPU` resource.** The launcher's `ray start --num-gpus N` declares N synthetic GPU slots,
+  one per trainer card, exactly as the TPU launcher does, so `miles/ray/*` needs no change. Ray must not pin
+  `CUDA_VISIBLE_DEVICES` to a single id (`RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1`); the trainer mask is the
+  full comma-separated list, and local ranks are 0..N-1 inside it.
 - The launcher passes `graceful_ray_stop=True`: the backend's default cleanup runs `pkill -9 sglang`, which would
   kill the engine started in the other shell.
 

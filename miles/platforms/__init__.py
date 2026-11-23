@@ -25,6 +25,8 @@ class Platform:
     premul_sum_reduce = True
     # the --update-weight-transfer-mode values an engine on this platform can receive; None: all of them
     weight_transfer_modes: frozenset[str] | None = None
+    # backend of the process group that broadcasts trainer weights to the rollout engines
+    process_group_backend = "nccl"
     # the engine reports the weight version each prompt's KV was computed under (--sglang-enable-prefill-weight-versions)
     prefill_weight_versions = True
     # torch.compile(dynamic=True) works here; a platform without it runs dynamic-shape helpers eager

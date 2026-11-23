@@ -89,7 +89,9 @@ backends are also supported. See
   AMD MI355X, MI350X, MI325X, and MI300X. See
   [Installation](https://miles.radixark.com/docs/getting-started/installation#hardware-requirements)
   for per-GPU status and [AMD ROCm](https://miles.radixark.com/docs/hardware-platforms/amd-gpus) for
-  the ROCm images.
+  the ROCm images. A single-host Ascend 950DT loop (Qwen3.5-4B, FSDP, external SGLang) is documented
+  under [Ascend NPUs](https://miles.radixark.com/docs/hardware-platforms/ascend-npu). That page does
+  not cover other Ascend generations.
 - **Wide recipe support.** GRPO, GSPO, PPO, and REINFORCE++ for RL, plus
   [score centering](https://miles.radixark.com/docs/examples/infra-features/score-centering), SFT, and
   [on-policy distillation](https://miles.radixark.com/docs/advanced/on-policy-distillation).

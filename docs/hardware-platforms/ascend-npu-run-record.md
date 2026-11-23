@@ -1,6 +1,6 @@
 # miles-dev 在 Ascend 950DT 上的支持度与接入记录
 
-> 本地执行记录（探针与阶段 4 写于 2026-11-20，阶段 5 闭环写于 2026-11-23）。**提交 PR 前删除本文件。** 执行脚本见 `scripts/npu/probes/`，构建与探针日志见 `scripts/npu/evidence/`。
+> 本地执行记录（探针与阶段 4 写于 2026-11-20，阶段 5 与阶段 6 写于 2026-11-23）。**提交 PR 前删除本文件。** 执行脚本见 `scripts/npu/probes/`，构建与探针日志见 `scripts/npu/evidence/`。
 
 分析对象：`/home/weichunyu/miles-dev`。记录开始时的基线是 `fa13e2ec`。平台与启动器提交到 `eaa238ab`，这一点相对 `radixark/miles` 的 `main` 超前 7、落后 32。fork 是 `zheliuyu/miles-dev`。
 
@@ -18,7 +18,10 @@
 | 阶段 3 平台对象 | ✅ 已提交 | 5 个 CPU 单测通过；`MILES_ACCELERATOR=npu` → npu/eager/disk-delta |
 | 阶段 4 纯训练 | ✅ | debug 数据 4 步，20.5 s，checkpoint 落盘（51 GB） |
 | 阶段 5 闭环 | ✅ | 3 个 rollout 退出码 0，weight version 1→2→3；从 `iter_0000003` 续跑 rollout 3，退出码 0，写出 `iter_0000004`。见 §9 |
-| 阶段 6 扩 4 卡 / 阶段 7 提 PR | ⬜ | 阶段 5 已不再挡住；4 卡启动器和 HCCL `broadcast` 都还没做 |
+| 阶段 6 扩 4 卡 | ✅ | 训练 3+7、引擎 5+6，`disk-delta`，`world_size` 2。3 个 rollout 与一次续跑都是退出码 0。见 §9 |
+| HCCL `broadcast` | ✅ | 训练 6、引擎 5，`raysubmit_5CFdwcNYBUS5Pbr1` 退出码 0。进程组 `backend=hccl`，首轮送回 1.6 s。见 §9 |
+| 默认 CUDA 路径 CPU 测试 | 部分 | `tests/fast`：16102 通过。失败集中在本机没有的 `megatron`、离线的 Hugging Face 缓存，以及 `tinker`。`test_platforms.py` 与 FSDP checkpoint 字段测试 13 项通过。见 §9 |
+| 阶段 7 提 PR | ⬜ | 闭环和 `broadcast` 都已测过。PR 1–4 还没提交上游。已推送的分支不能用 rebase 改写 |
 
 ## 1. 机器事实（2026-11-20 实测）
 
@@ -56,7 +59,7 @@
 | --- | --- |
 | 直接 `pip install` 后按 CUDA 配方训练 | 不可用（无 NPU 设备后端）；本次已补上 `MILES_ACCELERATOR=npu` |
 | 套用 `docker/npu_patch` | 不可用：补丁锁在 CANN 8.5 / Python 3.11 / torch-npu 2.8 / 910 代 |
-| 中小模型 RL（4B、2 卡） | 可用：探针 A–D、阶段 4，以及阶段 5 的 GRPO 闭环与 checkpoint 续跑已验证。reward 接近 0，回答大多顶到 1024 截断 |
+| 中小模型 RL（4B、2 卡和 4 卡） | 可用：探针 A–D、阶段 4，阶段 5 的 2 卡闭环，以及阶段 6 的 2 训练 + 2 引擎闭环都已验证。reward 接近 0，回答大多顶到 1024 截断 |
 | 8 卡满配、千亿级、README 里的前沿模型 | 没有对应实现，也不在本轮范围 |
 | 修改系统 CANN / 系统 Python | 不做；训练环境自带 CANN 9.2.0 与 conda 环境 |
 
@@ -69,7 +72,7 @@
 - 新增 `miles.platforms` 的 `npu` 后端（`MILES_ACCELERATOR=npu`），设备事实声明在平台类里，共享代码不写死 `"cuda"`；
 - 训练用 **FSDP** 读 HuggingFace 权重（单卡不需要张量并行）；
 - rollout 用**外部 SGLang 进程**，训练与引擎分卡，不用 `--colocate`（其实现依赖 CUDA IPC）；
-- 权重回传先用现成的 `--update-weight-transfer-mode disk-delta`；`broadcast` 等 HCCL 稳定后再试，作为去掉磁盘中转的优化；
+- 权重回传默认用 `--update-weight-transfer-mode disk-delta`；`broadcast` 已在 1 训练 + 1 引擎上用 HCCL 测过，启动器仍默认磁盘；
 - 分布式后端 `hccl`，CPU offload 关闭（避免拼出未测过的 `cpu:gloo,npu:hccl`）。
 
 刻意不做：Megatron、MindSpeed 接入、MXFP8/NVFP4、P2P RDMA、8 卡、Qwen3.5-27B/35B-A3B、修改系统 CANN、
@@ -82,7 +85,7 @@
 闭环的六件事：SGLang 采样 dapo-math-17k → 数学 reward 打分 → FSDP 对 Qwen3.5-4B（bf16）做优化器更新 →
 新权重送回 SGLang → 下一轮 rollout 的 weight version 递增 → 写出 checkpoint，新进程能从 checkpoint 继续跑一轮。
 
-验收规模：**2 张卡**（1 张训练、1 张引擎）。4B 权重约 8 GB，一张 96 GB 卡足够；4 卡数据并行是闭环之后的事。
+验收规模：**2 张卡**（1 张训练、1 张引擎）是第一道门。4B 权重约 8 GB，一张 96 GB 卡足够。4 卡（2 训练 + 2 引擎）已在阶段 6 用 `disk-delta` 跑通。
 
 完成定义（四条同时成立）：① 3 个 rollout 跑完并能从 checkpoint 续跑；② 改动拆成 PR 1–4 提交上游；
 ③ `docs/hardware-platforms/ascend-npu.md` 能让另一台同栈机器从 `prepare` 走到 `train`；④ 默认 CUDA 路径 CPU 测试仍通过。
@@ -179,7 +182,7 @@ python -m sglang.launch_server \
 
 `NpuPlatform` 的取值：`device_type=npu`、`compile_backend=eager`、`triton_kernels=False`、`flex_attention=False`、
 `dynamic_shapes=False`、`nvml_numa_affinity=False`、`rooted_reduce=False`、`premul_sum_reduce=False`、
-`weight_transfer_modes={'disk-delta'}`、`prefill_weight_versions=False`、`rollout_kv_cache_dtype=bfloat16`；
+`weight_transfer_modes={'disk-delta','broadcast'}`、`process_group_backend='hccl'`、`prefill_weight_versions=False`、`rollout_kv_cache_dtype=bfloat16`；
 设备绑定发生在建进程组**之前**（HCCL 在 `init_process_group` 时读当前设备，和 TPU 相反）。
 
 启动器 `scripts/npu/run_qwen3_5_4b_fsdp.py`（结构对齐 `scripts/tpu/`）：子命令 `prepare` / `sglang` / `train` /
@@ -218,13 +221,36 @@ Ray 资源不需要改 `miles/ray/*`：`execute_train` 会执行 `ray start --nu
 
 四条通过标准都有结果：3 个 rollout 退出码 0；后续送回的 weight version 高于第一版；reward 日志有数值；同一 checkpoint 再完成 1 个 rollout。reward 没有上升，回答大多顶到 1024。这证明的是采样、打分、更新、回传、续跑这条链，不是策略变好了。
 
-### 阶段 6：扩到 4 张空闲卡
+### 阶段 6：扩到 4 张空闲卡（2026-11-23，已通过）
 
-原计划：训练用两张卡（FSDP DP=2），rollout 用另外两张卡（两个 SGLang，各 1 卡），仍用 `disk-delta`；通过标准同阶段 5。卡号按开跑时的 `npu-smi` 现选，不预留 0、1、2、3。
+训练两张卡（FSDP `world_size` 2），rollout 两张卡（两个 SGLang，各 1 卡），`disk-delta`。通过标准同阶段 5。启动器在 `df9ec4ec` 接受逗号分隔的卡号：训练侧整组 `ASCEND_RT_VISIBLE_DEVICES`，并设 `RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1`，否则 Ray 把每个 rank 的本地卡号都钉成 0。`sglang` 仍只接受一张卡，每个引擎一个进程，端口是 `--sglang-port` 加卡在列表里的下标。
 
-这一步还不能直接开。当前启动器把训练和引擎都钉成一张卡（`--actor-num-gpus-per-node 1`，一个 `--sglang-port`）。`broadcast` 也还不是把传输模式改成 HCCL 就行：`miles/backends/training_utils/weight_update/protocols/broadcast.py` 把进程组建在 `backend="nccl"` 上，`NpuPlatform.weight_transfer_modes` 仍只有 `disk-delta`。4 卡闭环先继续用 `disk-delta`；`broadcast` 单独做，测完再决定要不要写进平台类。
+开跑时 4 卡被别人占用，所以训练用 3 和 7，引擎用 5（31001）和 6（31002）。保存目录是 `/home/weichunyu/miles-950/checkpoints-stage6`，delta 目录是 `weight-delta-stage6` 和 `rollout-checkpoint-stage6`。两个引擎共用一个本地 checkpoint 目录，依赖环境里的 `/pull_weights` 补丁：同一版本的第二次拉取是空操作。这个补丁在 SGLang 安装目录里，不在本仓库，重装 SGLang 会消失。
 
-阶段 5 还说明两件和规模无关的事，4 卡跑不掉：上面那些共享路径修复要留在这棵树上；两个引擎都依赖环境内的 `/pull_weights` 补丁。reward 仍不作为通过条件。
+第一次任务 `raysubmit_v3w5y3LQzsVtb1fn` 在发出 version 3 之前退出，没有写出 `iter_*`。清掉 delta 目录后重跑。成功的训练是 `raysubmit_iRjaSPa7t6FMLbgL`，21:20 退出码 0，写出 `iter_0000003`（`world_size` 2，`next_rollout_id` 3）。
+
+| 轮次 | 采样 | 训练 | 送回引擎 |
+| --- | --- | --- | --- |
+| 训练前 | — | — | version 1，变更 0% |
+| rollout 0 | 回答长度 1014，截断 0.875，raw reward 0.125 | step 0，`grad_norm` 1.288 | version 2，1.58%，0.34 GB，两个引擎 HTTP 200 |
+| rollout 1 | 回答长度 977，截断 0.875，raw reward 0.125 | step 1，`grad_norm` 1.412 | version 3，1.25%，0.28 GB |
+| rollout 2 | 回答长度 906，截断 0.75，raw reward 0.25 | step 2，`grad_norm` 0，`loss` 0 | 没有再发一版；权重留在 checkpoint |
+
+续跑 `raysubmit_gpxku5vM1w4LWXkE`，21:33 退出码 0。两个 rank 都从 `iter_0000003` 载入模型、优化器和学习率调度器，写出 `iter_0000004`（`rollout_id` 3，`next_rollout_id` 4，`world_size` 2）。新进程的 version 1 相对原始 HF 权重变更 2.21%、0.45 GB。rollout 3：回答长度 1013，截断 0.9375，raw reward 0.0625；step 3 `grad_norm` 1.035。
+
+四条通过标准都有结果。reward 没有形成上升曲线，回答大多顶到 1024。这证明的是 4 卡上的采样、打分、更新、回传、续跑，不是策略变好了。
+
+`broadcast` 不是这一阶段的通过条件。`broadcast.py` 改为使用 `current_platform.process_group_backend`（NPU 上是 `hccl`，CUDA 上仍是 `nccl`）。SGLang 0.5.23 的 `init_custom_process_group` 直接构造 `Backend(backend)`，不会把 `nccl` 改写成 `hccl`，所以两边都必须显式传 `hccl`。
+
+### HCCL broadcast（2026-11-23，1 训练 + 1 引擎，已通过）
+
+引擎在 5 卡、端口 31001。训练在 6 卡，任务 `raysubmit_5CFdwcNYBUS5Pbr1`，`--num-rollout 1`，`--extra-args "--update-weight-transfer-mode broadcast"`，22:11 退出码 0。保存目录是 `/home/weichunyu/miles-950/checkpoints-broadcast`，写出 `iter_0000001`。
+
+引擎日志是 `init custom process group ... backend=hccl`，`init_weights_update_group` 返回 200。训练前的送回走 `/update_weights_from_distributed`，17 个 bucket、1.6 s，全部 200，随后 `update_weight_version` 200。rollout 0：16/16，回答长度 1005，截断 0.875，raw reward 0.125，`weight_version` 1。step 0：`grad_norm` 1.152，`loss` 约 0。这是一次真实的 HCCL 权重组，不是把 `nccl` 字符串留在原地。2 个引擎的 broadcast 没有测。`NpuPlatform.weight_transfer_modes` 因此包含 `disk-delta` 和 `broadcast`。启动器默认仍是 `disk-delta`。
+
+### 默认 CUDA 路径 CPU 测试（2026-11-23）
+
+`MILES_ACCELERATOR` 不设置，`pytest tests/fast`（跳过 `tests/fast/backends/megatron_utils`，16 个进程）。结果：16102 通过，465 跳过，21 个预期失败，1375 失败，668 个收集或 setup 错误，用时 14 分 54 秒。失败的主体是本环境没有 `megatron`（约 600 处）、Hugging Face 被离线挡住，以及没有 `tinker`。`tests/fast/utils/test_platforms.py` 和 `tests/fast/backends/fsdp_utils/test_checkpoint_config_fields.py` 单独再跑，13 项通过。日志在 `/home/weichunyu/miles-950/logs/cpu-tests-fast.log`。这不是上游 CI 那台装了 Megatron、能访问模型缓存的机器上的全绿，但这次改动碰到的平台测试是通过的。
 
 ### 阶段 7：PR 拆分（目标 `radixark/miles` 的 `main`）
 

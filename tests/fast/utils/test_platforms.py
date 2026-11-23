@@ -18,7 +18,9 @@ def test_the_default_accelerator_is_cuda_and_does_not_load_the_npu_platform(monk
     """A CUDA process must keep working on a machine where torch_npu is not installed."""
     monkeypatch.delenv("MILES_ACCELERATOR", raising=False)
     sys.modules.pop("miles.platforms.npu", None)
-    assert platforms._select_platform().device_type == "cuda"
+    platform = platforms._select_platform()
+    assert platform.device_type == "cuda"
+    assert platform.process_group_backend == "nccl"
     assert "miles.platforms.npu" not in sys.modules
 
 
@@ -40,7 +42,7 @@ def test_npu_without_torch_npu_names_the_missing_package(monkeypatch):
 
 
 def test_npu_selects_the_torch_npu_platform(monkeypatch):
-    """The NPU facts are readable without a device: disk-delta only, no Triton, no NVML, bf16 KV."""
+    """The NPU facts are readable without a device: disk-delta and broadcast, no Triton, no NVML, bf16 KV."""
     monkeypatch.setitem(sys.modules, "torch_npu", ModuleType("torch_npu"))
     sys.modules.pop("miles.platforms.npu", None)
     monkeypatch.setenv("MILES_ACCELERATOR", "npu")
@@ -51,7 +53,8 @@ def test_npu_selects_the_torch_npu_platform(monkeypatch):
     assert platform.flex_attention is False
     assert platform.rooted_reduce is False
     assert platform.premul_sum_reduce is False
-    assert platform.weight_transfer_modes == frozenset({"disk-delta"})
+    assert platform.weight_transfer_modes == frozenset({"disk-delta", "broadcast"})
+    assert platform.process_group_backend == "hccl"
     assert platform.prefill_weight_versions is False
     assert platform.dynamic_shapes is False
     assert platform.nvml_numa_affinity is False

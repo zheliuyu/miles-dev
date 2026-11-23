@@ -20,8 +20,10 @@ class NpuPlatform(Platform):
     # HCCL's rooted reduce and PREMUL_SUM are unmeasured; reduce falls back to all_reduce.
     rooted_reduce = False
     premul_sum_reduce = False
-    # The first closed loop publishes weights through disk. broadcast waits on a measured HCCL group.
-    weight_transfer_modes = frozenset({"disk-delta"})
+    # disk-delta is the default path. broadcast was measured on one trainer card and one engine: the HCCL group
+    # came up and the engine accepted the tensors.
+    weight_transfer_modes = frozenset({"disk-delta", "broadcast"})
+    process_group_backend = "hccl"
     # SGLang 0.5.23 has no --enable-prefill-weight-versions.
     prefill_weight_versions = False
     dynamic_shapes = False
