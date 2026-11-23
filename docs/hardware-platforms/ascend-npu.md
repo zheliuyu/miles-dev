@@ -14,8 +14,8 @@ This is one host and one model, not a claim that every Ascend generation runs Mi
 
 The loop below was run with Python 3.12, torch 2.10.0+cpu, torch_npu 2.10.0.post7, CANN 9.2.0,
 SGLang 0.5.23, sgl-kernel-npu 2026.11.0.post4, and transformers 5.19.0. Activating the environment
-must source the CANN `set_env.sh` before `import torch`, or HCCL fails to load. The host-specific
-paths, the conda environment, and the card-picking rules are in
+must source the CANN `set_env.sh` before `import torch`, or HCCL fails to load. Environment setup
+and the card-picking rules are in
 [`scripts/npu/README.md`](https://github.com/radixark/miles/blob/main/scripts/npu/README.md).
 
 ## Launch training
@@ -47,12 +47,13 @@ python scripts/npu/run_qwen3_5_4b_fsdp.py train --trainer-device 0 --engine-devi
 
 `--trainer-device` and `--engine-device` take comma-separated card ids. The trainer count is the
 FSDP world size. `sglang` still accepts one card, so start one process per engine card. The train
-command addresses engine `i` at `--sglang-port + i`, in the order of `--engine-device`.
+command addresses engine `i` at `--sglang-port + i`, in the order of `--engine-device`. The layout
+below puts the trainer on cards 0 and 1 and one engine on each of cards 2 and 3:
 
 ```bash
-python scripts/npu/run_qwen3_5_4b_fsdp.py sglang --engine-device 5 --sglang-port 31001
-python scripts/npu/run_qwen3_5_4b_fsdp.py sglang --engine-device 6 --sglang-port 31002
-python scripts/npu/run_qwen3_5_4b_fsdp.py train --trainer-device 3,7 --engine-device 5,6
+python scripts/npu/run_qwen3_5_4b_fsdp.py sglang --engine-device 2 --sglang-port 31001
+python scripts/npu/run_qwen3_5_4b_fsdp.py sglang --engine-device 3 --sglang-port 31002
+python scripts/npu/run_qwen3_5_4b_fsdp.py train --trainer-device 0,1 --engine-device 2,3
 ```
 
 Both engines receive the same `--update-weight-local-checkpoint-dir` and apply the same xor delta.

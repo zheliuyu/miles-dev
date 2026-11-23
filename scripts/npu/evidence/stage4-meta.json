@@ -1,9 +1,0 @@
-{
-  "global_step": 0,
-  "iteration": 1,
-  "micro_step": 0,
-  "next_rollout_id": 1,
-  "rollout_id": 0,
-  "timestamp": 1795166165.1103427,
-  "world_size": 1
-}
