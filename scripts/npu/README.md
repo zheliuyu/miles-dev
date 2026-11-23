@@ -19,19 +19,16 @@ its torch import.
 
 ## Run
 
-One launcher, `run_qwen3_5_4b_fsdp.py`, for Qwen3.5-4B with FSDP and an external SGLang engine. Pass the
-local checkpoint and the dapo-math-17k jsonl with `--model-path` and `--data-path`. Checkpoints, the
-disk-delta directory, and the engine-local checkpoint go to `--save-dir`, `--weight-disk-dir`, and
-`--local-checkpoint-dir`. `prepare` checks the checkpoint and the prompt file and does not download
-them. Pass the same path flags on every subcommand. The steps below use one trainer card and one
-engine card, and show only the flags that change. Pick cards that `npu-smi info` shows as empty.
+One launcher, `run_qwen3_5_4b_fsdp.py`, for Qwen3.5-4B with FSDP and an external SGLang engine. Paths
+are relative to the working directory: `--model-path Qwen3.5-4B`, `--data-path dapo-math-17k.jsonl`,
+`--save-dir checkpoints`, `--weight-disk-dir weight-delta`, and `--local-checkpoint-dir
+rollout-checkpoint`. `prepare` checks the checkpoint and the prompt file and does not download them.
+The steps below use one trainer card and one engine card. Pick cards that `npu-smi info` shows as empty.
 
 1. Check the model and the dataset:
 
    ```bash
-   python scripts/npu/run_qwen3_5_4b_fsdp.py prepare \
-       --model-path <checkpoint> \
-       --data-path <prompts.jsonl>
+   python scripts/npu/run_qwen3_5_4b_fsdp.py prepare
    ```
 
 2. Start SGLang on one card, in its own shell. It stays in the foreground:
@@ -52,7 +49,7 @@ engine card, and show only the flags that change. Pick cards that `npu-smi info`
 
    ```bash
    python scripts/npu/run_qwen3_5_4b_fsdp.py train --trainer-device 0 --engine-device 1 \
-       --num-rollout 4 --extra-args "--load <save-dir>"
+       --num-rollout 4 --extra-args "--load checkpoints"
    ```
 
 Four cards use the same launcher: cards 0 and 1 train, and cards 2 and 3 each run an engine.

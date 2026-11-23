@@ -1,7 +1,7 @@
 """Qwen3.5-4B GRPO on one Ascend 950DT host: FSDP trainer and external SGLang.
 
 The jobs are separate processes that the launcher pins with ASCEND_RT_VISIBLE_DEVICES. `--trainer-device` and
-`--engine-device` each take one card (`6`) or a comma-separated list (`2,3`). One `sglang` process serves one
+`--engine-device` each take one card (`0`) or a comma-separated list (`0,1`). One `sglang` process serves one
 card; start one process per engine card. Weights return through disk-delta.
 
 Run `prepare` once (it only checks the local model and dataset, no download when they already exist), then `sglang`
@@ -9,8 +9,8 @@ in its own shell (it stays in the foreground), then `train`. `debug-data` + `deb
 on a fixed token batch, with no SGLang server, for a first training check.
 
 Args:
-  --model-path: local Qwen3.5-4B checkpoint (defaults to the weights already on this host).
-  --data-path: dapo-math-17k jsonl.
+  --model-path: local Qwen3.5-4B checkpoint. Defaults to ./Qwen3.5-4B.
+  --data-path: dapo-math-17k jsonl. Defaults to ./dapo-math-17k.jsonl.
   --trainer-device / --engine-device: physical Ascend card ids, written into ASCEND_RT_VISIBLE_DEVICES.
   --sglang-port: port of the engine `train` connects to.
   --num-rollout / --rollout-batch-size / --n-samples-per-prompt: the closed-loop workload.
@@ -20,7 +20,7 @@ Args:
 
 Examples:
   python scripts/npu/run_qwen3_5_4b_fsdp.py debug-data
-  python scripts/npu/run_qwen3_5_4b_fsdp.py debug-train --trainer-device 7
+  python scripts/npu/run_qwen3_5_4b_fsdp.py debug-train --trainer-device 0
   python scripts/npu/run_qwen3_5_4b_fsdp.py sglang --engine-device 1
   python scripts/npu/run_qwen3_5_4b_fsdp.py train --trainer-device 0
 """
@@ -43,8 +43,8 @@ WEIGHT_TRANSFER_MODE = "disk-delta"
 @dataclass
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     run_id: str = command_utils.create_run_id()
-    model_path: str = "/mnt/weight/Qwen3.5-4B"
-    data_path: str = "/mnt/share/dataset/dapo-math-17k/dapo-math-17k.jsonl"
+    model_path: str = "Qwen3.5-4B"
+    data_path: str = "dapo-math-17k.jsonl"
     # physical cards; the launcher writes them into ASCEND_RT_VISIBLE_DEVICES for each job
     trainer_device: str = "0"
     engine_device: str = "1"
@@ -54,13 +54,13 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     rollout_batch_size: int = 4
     n_samples_per_prompt: int = 4
     rollout_max_response_len: int = 1024
-    save_dir: str = "/home/weichunyu/miles-950/checkpoints"
-    # one 4B checkpoint costs ~51 GB (20 GB model + 32 GB Adam fp32 state), and the root disk is tight
+    save_dir: str = "checkpoints"
+    # one 4B Adam checkpoint is about 51 GB; run from a filesystem that can hold it
     save_interval: int = 3
-    # disk-delta refuses to start without both directories; keep them on the NFS work dir, not /tmp
-    weight_disk_dir: str = "/home/weichunyu/miles-950/weight-delta"
-    local_checkpoint_dir: str = "/home/weichunyu/miles-950/rollout-checkpoint"
-    debug_data_dir: str = "/home/weichunyu/miles-950/debug-rollout"
+    # disk-delta refuses to start without both directories
+    weight_disk_dir: str = "weight-delta"
+    local_checkpoint_dir: str = "rollout-checkpoint"
+    debug_data_dir: str = "debug-rollout"
     extra_args: str = ""
     # the engine runs in its own shell; a run must not SIGKILL it, which the backend's default cleanup does
     graceful_ray_stop: bool = True
