@@ -90,7 +90,7 @@ backends are also supported. See
   [Installation](https://miles.radixark.com/docs/getting-started/installation#hardware-requirements)
   for per-GPU status and [AMD ROCm](https://miles.radixark.com/docs/hardware-platforms/amd-gpus) for
   the ROCm images. A single-host Ascend 950DT loop (Qwen3.5-4B, FSDP, external SGLang) is documented
-  under [Ascend NPUs](https://miles.radixark.com/docs/hardware-platforms/ascend-npu). That page does
+  on branch `docs/ascend-950-support` in `docs/hardware-platforms/ascend-npu.md`. That page does
   not cover other Ascend generations.
 - **Wide recipe support.** GRPO, GSPO, PPO, and REINFORCE++ for RL, plus
   [score centering](https://miles.radixark.com/docs/examples/infra-features/score-centering), SFT, and

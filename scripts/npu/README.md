@@ -8,8 +8,8 @@ each engine card is its own `sglang` process. Weights move from trainer to engin
 
 ## Environment
 
-The image and the packages installed on top of it are in the
-[Ascend NPU page](../../docs/hardware-platforms/ascend-npu.md#image). The base image is
+The image and the packages installed on top of it are in
+`docs/hardware-platforms/ascend-npu.md` on branch `docs/ascend-950-support`. The base image is
 `ascendai/torch-npu:2.10.0.post7-cann9.2.0-950-openeuler24.03-py3.12` (CANN 9.2.0, Python 3.12,
 torch 2.10.0, torch_npu 2.10.0.post7). triton-ascend 3.6.0, SGLang 0.5.23, sgl-kernel-npu
 2026.11.0.post4, and Miles are installed afterwards.
