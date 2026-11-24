@@ -327,8 +327,8 @@ ln -sfn /mnt/share/dataset/dapo-math-17k/dapo-math-17k.jsonl dapo-math-17k.jsonl
 | 编号 | 卡数 | 状态 | 做什么 | 通过标准 |
 | --- | --- | --- | --- | --- |
 | V0 | 0 | 已过 | `prepare`；硬件页 Verify（`import torch, torch_npu`，`npu-smi info`）；`debug-data` | 退出码 0。已见上表：`debug-rollout/0.pt` 有 16 条样本 |
-| V1 | 1 | 未跑 | `debug-train --trainer-device <空闲卡>`。不启 SGLang | 退出码 0，写出 `checkpoints/iter_0000001`。固定奖励，`train/loss` 和 `grad_norm` 为 0 |
-| V2 | 2 | 未跑 | 一个 shell：`sglang --engine-device <卡B>`。另一个 shell：`train --trainer-device <卡A> --engine-device <卡B>`。默认 3 个 rollout，disk-delta | 退出码 0。weight version 从 1 到 2、3。reward 日志是数字。写出 `iter_0000003`。不据此说策略变好了 |
+| V1 | 1 | 已过 | `debug-train --trainer-device 0`。不启 SGLang。`raysubmit_GZ1Tne2YaBg4NDaP` | 退出码 0。`checkpoints/iter_0000001` 51 GB，tracker 为 1。4 步 `train/loss` 与 `grad_norm` 都是 0。日志里有 `Restored 48 weight-sync dtypes` |
+| V2 | 2 | 暂停 | 2026-11-24 09:21 按要求停下。卡 1 的 SGLang 已就绪，`POST /pull_weights` 返回 200，并再次打出 `Restored 48 weight-sync dtypes`。`raysubmit_PWziPT45jkyeBNPF` 在 rollout 0 结束前被停掉，没有检查点。目录 `doc-verify/two-card` 不能拿来续跑 |
 | V3 | 2 | 未跑 | V2 的引擎保持运行。`train --trainer-device <卡A> --engine-device <卡B> --num-rollout 4 --extra-args "--load checkpoints"` | 退出码 0。从 `iter_0000003` 载入模型、优化器和学习率，再跑 rollout 3，写出 `iter_0000004` |
 | V4 | 4 | 未跑 | `sglang --engine-device <卡C> --sglang-port 31001`；`sglang --engine-device <卡D> --sglang-port 31002`；`train --trainer-device <卡A>,<卡B> --engine-device <卡C>,<卡D>` | 退出码 0。FSDP `world_size` 2，两个引擎的拉权重都是 HTTP 200。写出 `iter_0000003` |
 
