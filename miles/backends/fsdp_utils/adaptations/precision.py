@@ -6,27 +6,8 @@ Resolves the FSDP ``MixedPrecisionPolicy`` dtypes and whether to keep an fp32 ma
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
-from pathlib import Path
-
 import torch
-from safetensors import safe_open
-
 from miles.platforms import current_platform
-
-# Safetensors header names for the dtypes a checkpoint may store per tensor. from_pretrained
-# follows config.dtype and can collapse these (Qwen3.5 keeps A_log and the GDN norm in fp32).
-_TORCH_DTYPE_BY_SAFETENSORS = {
-    "F32": torch.float32,
-    "BF16": torch.bfloat16,
-    "F16": torch.float16,
-    "F64": torch.float64,
-    "I64": torch.int64,
-    "I32": torch.int32,
-    "I16": torch.int16,
-    "I8": torch.int8,
-    "U8": torch.uint8,
-    "BOOL": torch.bool,
-}
 
 
 @dataclass
@@ -71,33 +52,3 @@ def apply_fp32_master(
     model = model.to(torch.float32)
     model._fsdp_sync_dtypes = sync_dtypes
     return model
-
-
-def _safetensors_dtypes(checkpoint_path: str) -> dict[str, torch.dtype]:
-    """Per-tensor dtypes declared in the checkpoint files, before from_pretrained casts them."""
-    dtypes = {}
-    for path in sorted(Path(checkpoint_path).glob("*.safetensors")):
-        with safe_open(path, framework="pt", device="cpu") as tensors:
-            for name in tensors.keys():
-                dtype = _TORCH_DTYPE_BY_SAFETENSORS.get(tensors.get_slice(name).get_dtype())
-                if dtype is not None:
-                    dtypes[name] = dtype
-    return dtypes
-
-
-def align_sync_dtypes_to_checkpoint(model, checkpoint_path: str) -> int:
-    """Point outbound weight sync at the checkpoint file dtype.
-
-    ``from_pretrained`` applies ``config.dtype`` and can turn an fp32 tensor into bf16 before
-    ``apply_fp32_master`` records it, so the weight group would send bf16 where the engine holds
-    fp32. Returns how many recorded dtypes were corrected.
-    """
-    sync_dtypes = getattr(model, "_fsdp_sync_dtypes", None)
-    if not sync_dtypes:
-        return 0
-    corrected = 0
-    for name, dtype in _safetensors_dtypes(checkpoint_path).items():
-        if name in sync_dtypes and sync_dtypes[name] != dtype:
-            sync_dtypes[name] = dtype
-            corrected += 1
-    return corrected

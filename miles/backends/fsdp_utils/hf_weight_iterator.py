@@ -21,27 +21,10 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
         )
         self._arch_adapter = resolve_arch_adapter(self.model.config)
 
-    def _tied_alias_names(self) -> set[str]:
-        """Names that share storage with another parameter and are omitted from the checkpoint.
-
-        Qwen3.5 ties ``lm_head.weight`` to the token embedding. ``state_dict`` still emits the alias,
-        but the checkpoint stores one tensor for the pair, so the weight sync would send the same bytes
-        twice under two names.
-        """
-        tied = getattr(self.model, "_tied_weights_keys", None)
-        if isinstance(tied, dict):
-            return set(tied)
-        if isinstance(tied, (set, list, tuple)):
-            return set(tied)
-        return set()
-
     def _iter_hf_param_units(self, weights, *, materialize):
         pending: deque[tuple[str, torch.Tensor, torch.Tensor]] = deque()
         pending_bytes = 0
-        skip = self._tied_alias_names()
         for name, param in self.model.state_dict().items():
-            if name in skip:
-                continue
             pending.append((name, param, gather_full_param(param, async_op=True)))
             pending_bytes += param.numel() * param.element_size()
             if pending_bytes >= self.args.update_weight_buffer_size:
