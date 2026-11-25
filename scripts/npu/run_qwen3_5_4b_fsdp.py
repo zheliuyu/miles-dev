@@ -2,7 +2,8 @@
 
 The jobs are separate processes that the launcher pins with ASCEND_RT_VISIBLE_DEVICES. `--trainer-device` and
 `--engine-device` each take one card (`0`) or a comma-separated list (`0,1`). One `sglang` process serves one
-card; start one process per engine card. Weights return through disk-delta.
+card; start one process per engine card. Weights return through the platform's default `broadcast` mode, a HCCL
+weight group between the trainer and the engine.
 
 Run `prepare` once (it only checks the local model and dataset, no download when they already exist), then `sglang`
 in its own shell (it stays in the foreground), then `train`. `debug-data` + `debug-train` run the FSDP trainer alone
@@ -36,8 +37,8 @@ import typer
 from miles.utils.external_utils import command_utils
 
 SEQ_LEN = 2048
-# NpuPlatform.weight_transfer_modes; the launcher does not import torch_npu to read it
-WEIGHT_TRANSFER_MODE = "disk-delta"
+# NpuPlatform.weight_transfer_modes; broadcast is the default and needs no engine-side /pull_weights handler
+WEIGHT_TRANSFER_MODE = "broadcast"
 
 
 @dataclass
@@ -323,8 +324,13 @@ def train(args: ScriptArgs):
     _require(args.data_path, "dataset")
     os.environ.setdefault("NCCL_NVLS_ENABLE", "0")
     engine_cards = _cards(args.engine_device)
-    engine_addrs = " ".join(
-        f"http://127.0.0.1:{args.sglang_port + index}" for index in range(len(engine_cards))
+    engine_addrs = " ".join(f"http://127.0.0.1:{args.sglang_port + index}" for index in range(len(engine_cards)))
+    # the disk directories matter only to disk-delta; broadcast moves the bytes over the weight group instead
+    delta_args = (
+        f"--update-weight-disk-dir {args.weight_disk_dir} "
+        f"--update-weight-local-checkpoint-dir {args.local_checkpoint_dir} "
+        if WEIGHT_TRANSFER_MODE == "disk-delta"
+        else ""
     )
     train_args = " ".join(
         [
@@ -337,8 +343,7 @@ def train(args: ScriptArgs):
             f"--rollout-num-gpus {len(engine_cards)}",
             "--rollout-num-gpus-per-engine 1",
             f"--update-weight-transfer-mode {WEIGHT_TRANSFER_MODE}",
-            f"--update-weight-disk-dir {args.weight_disk_dir}",
-            f"--update-weight-local-checkpoint-dir {args.local_checkpoint_dir}",
+            delta_args,
             _train_backend_args(args),
             _misc_args(args),
             args.extra_args,

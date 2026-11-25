@@ -3,8 +3,8 @@
 GRPO training on one Ascend 950DT host. The FSDP trainer and an external SGLang server run as separate
 processes, each pinned by its own `ASCEND_RT_VISIBLE_DEVICES`. The default is one trainer card and one
 engine card. Comma-separated ids run more than one of each: the trainer list is the FSDP world size, and
-each engine card is its own `sglang` process. Weights move from trainer to engine through
-`--update-weight-transfer-mode disk-delta`.
+each engine card is its own `sglang` process. Weights move from trainer to engine over the HCCL `broadcast`
+weight group, which is `NpuPlatform`'s default transfer mode.
 
 ## Environment
 
@@ -71,17 +71,16 @@ uses a uniform reward, so `train/loss` and `grad_norm` are 0. The check covers t
 
 - **Pick free cards.** `npu-smi info` shows which cards have processes. The launcher writes only the ids
   you pass into `ASCEND_RT_VISIBLE_DEVICES`. Leave a card that already has a process alone.
-- **disk-delta needs a `/pull_weights` handler in the SGLang install.** SGLang 0.5.23 does not ship one.
-  Version 0 copies the HF checkpoint into the engine-local directory, and later versions apply the zstd
-  deltas. Two engines that share that directory must record the applied version and skip a repeat, or the
-  second pull xors the same delta again. The handler is outside Miles and disappears if SGLang is
-  reinstalled. Without the shared-directory rule, give each engine its own `--local-checkpoint-dir`.
-  `broadcast` does not use this handler.
+- **`broadcast` is the default.** The trainer and the engine build a HCCL weight group; one trainer card
+  plus one engine has been measured (`init custom process group ... backend=hccl`, 17 buckets in 1.6 s).
+  A 2-engine broadcast has not been run.
+- **`disk-delta` is the optional alternative and needs a `/pull_weights` handler in the SGLang install.**
+  SGLang 0.5.23 does not ship one. Version 0 copies the HF checkpoint into the engine-local directory, and
+  later versions apply the zstd deltas. Two engines that share that directory must record the applied
+  version and skip a repeat, or the second pull xors the same delta again. The handler is outside Miles and
+  disappears if SGLang is reinstalled. Without it, keep the default `broadcast`.
 - **One 4B Adam checkpoint is about 51 GB.** Point `--save-dir` at a filesystem that can hold it. Keep
   `--save-interval` at 3 or higher, and delete old `iter_*` directories after a run.
-- **`broadcast` is declared, and one trainer card plus one engine has been measured.** The launcher still
-  defaults to `disk-delta`. Pass `--extra-args "--update-weight-transfer-mode broadcast"` to use the HCCL
-  weight group. A 2-engine broadcast has not been run.
 - **Ray receives synthetic GPU slots.** `ray start --num-gpus N` declares one slot per trainer card.
   `RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1` keeps Ray from pinning every rank to local id 0. The
   launcher sets `graceful_ray_stop=True`, so cleanup leaves the engine in the other shell running.
