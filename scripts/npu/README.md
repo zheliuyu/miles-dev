@@ -71,14 +71,16 @@ uses a uniform reward, so `train/loss` and `grad_norm` are 0. The check covers t
 
 - **Pick free cards.** `npu-smi info` shows which cards have processes. The launcher writes only the ids
   you pass into `ASCEND_RT_VISIBLE_DEVICES`. Leave a card that already has a process alone.
-- **`broadcast` is the default.** The trainer and the engine build a HCCL weight group; one trainer card
-  plus one engine has been measured (`init custom process group ... backend=hccl`, 17 buckets in 1.6 s).
-  A 2-engine broadcast has not been run.
+- **`broadcast` is the default.** The trainer and the engines build a HCCL weight group; the 2-card
+  loop and the 4-card loop (two engines) both ran end to end (`init custom process group ... backend=hccl`).
 - **`disk-delta` is the optional alternative and needs a `/pull_weights` handler in the SGLang install.**
   SGLang 0.5.23 does not ship one. Version 0 copies the HF checkpoint into the engine-local directory, and
   later versions apply the zstd deltas. Two engines that share that directory must record the applied
   version and skip a repeat, or the second pull xors the same delta again. The handler is outside Miles and
   disappears if SGLang is reinstalled. Without it, keep the default `broadcast`.
+- **Ray needs a high file-descriptor limit.** With `ulimit -n` at the host default (1024) the raylet dies
+  with `epoll: Too many open files` and `ray job submit` fails with a 500. Run `ulimit -n 1048576` before
+  starting the launcher.
 - **One 4B Adam checkpoint is about 51 GB.** Point `--save-dir` at a filesystem that can hold it. Keep
   `--save-interval` at 3 or higher, and delete old `iter_*` directories after a run.
 - **Ray receives synthetic GPU slots.** `ray start --num-gpus N` declares one slot per trainer card.
