@@ -1,6 +1,8 @@
 # miles-dev 在 Ascend 950DT 上的支持度与接入记录
 
 > 本地执行记录（探针与阶段 4 写于 2026-11-20，阶段 5 与阶段 6 写于 2026-11-23）。**提交 PR 前删除本文件。** 执行脚本见 `scripts/npu/probes/`，构建与探针日志见 `scripts/npu/evidence/`。
+>
+> **2026-11-26 起本分支只保留 `broadcast`。** `disk-delta` 的代码、启动器参数与文档段落都已删除；下文 §9、§12 里出现的 `disk-delta` 是历史记录（旧机器验证时使用），不代表当前代码。
 
 分析对象：`/home/weichunyu/miles-dev`。记录开始时的基线是 `fa13e2ec`。平台与启动器提交到 `eaa238ab`，这一点相对 `radixark/miles` 的 `main` 超前 7、落后 32。fork 是 `zheliuyu/miles-dev`。
 
@@ -15,10 +17,10 @@
 | 探针 B（两卡 HCCL） | ✅ | all-reduce `[3,5,7]`、rooted reduce `30/20`、16M 元素 2.59 s |
 | 探针 C（Qwen3.5-4B 前向） | ✅ | loss 2.9333，426/426 参数有梯度，HBM 20.8 GB |
 | 探针 D（SGLang 生成） | ✅ | NPU 1 起服务，返回「1+1 等于 2。」，14 tokens |
-| 阶段 3 平台对象 | ✅ 已提交 | 5 个 CPU 单测通过；`MILES_ACCELERATOR=npu` → npu/eager/disk-delta |
+| 阶段 3 平台对象 | ✅ 已提交 | 5 个 CPU 单测通过；`MILES_ACCELERATOR=npu` → npu/eager/broadcast |
 | 阶段 4 纯训练 | ✅ | debug 数据 4 步，20.5 s，checkpoint 落盘（51 GB） |
 | 阶段 5 闭环 | ✅ | 3 个 rollout 退出码 0，weight version 1→2→3；从 `iter_0000003` 续跑 rollout 3，退出码 0，写出 `iter_0000004`。见 §9 |
-| 阶段 6 扩 4 卡 | ✅ | 训练 3+7、引擎 5+6，`disk-delta`，`world_size` 2。3 个 rollout 与一次续跑都是退出码 0。见 §9 |
+| 阶段 6 扩 4 卡 | ✅ | 训练 3+7、引擎 5+6（当时用 `disk-delta`；现已改为 broadcast），`world_size` 2。3 个 rollout 与一次续跑都是退出码 0。见 §9 |
 | HCCL `broadcast` | ✅ | 训练 6、引擎 5，`raysubmit_5CFdwcNYBUS5Pbr1` 退出码 0。进程组 `backend=hccl`，首轮送回 1.6 s。见 §9 |
 | 默认 CUDA 路径 CPU 测试 | 部分 | `tests/fast`：16102 通过。失败集中在本机没有的 `megatron`、离线的 Hugging Face 缓存，以及 `tinker`。`test_platforms.py` 与 FSDP checkpoint 字段测试 13 项通过。见 §9 |
 | 阶段 7 提 PR | ⬜ | 闭环和 `broadcast` 都已测过。PR 1–4 还没提交上游。已推送的分支不能用 rebase 改写 |
@@ -72,7 +74,7 @@
 - 新增 `miles.platforms` 的 `npu` 后端（`MILES_ACCELERATOR=npu`），设备事实声明在平台类里，共享代码不写死 `"cuda"`；
 - 训练用 **FSDP** 读 HuggingFace 权重（单卡不需要张量并行）；
 - rollout 用**外部 SGLang 进程**，训练与引擎分卡，不用 `--colocate`（其实现依赖 CUDA IPC）；
-- 权重回传默认用 `--update-weight-transfer-mode disk-delta`；`broadcast` 已在 1 训练 + 1 引擎上用 HCCL 测过，启动器仍默认磁盘；
+- 权重回传统一用 `--update-weight-transfer-mode broadcast`（HCCL 权重组），启动器默认且只支持这一种；
 - 分布式后端 `hccl`，CPU offload 关闭（避免拼出未测过的 `cpu:gloo,npu:hccl`）。
 
 刻意不做：Megatron、MindSpeed 接入、MXFP8/NVFP4、P2P RDMA、8 卡、Qwen3.5-27B/35B-A3B、修改系统 CANN、
@@ -85,7 +87,7 @@
 闭环的六件事：SGLang 采样 dapo-math-17k → 数学 reward 打分 → FSDP 对 Qwen3.5-4B（bf16）做优化器更新 →
 新权重送回 SGLang → 下一轮 rollout 的 weight version 递增 → 写出 checkpoint，新进程能从 checkpoint 继续跑一轮。
 
-验收规模：**2 张卡**（1 张训练、1 张引擎）是第一道门。4B 权重约 8 GB，一张 96 GB 卡足够。4 卡（2 训练 + 2 引擎）已在阶段 6 用 `disk-delta` 跑通。
+验收规模：**2 张卡**（1 张训练、1 张引擎）是第一道门。4B 权重约 8 GB，一张 96 GB 卡足够。4 卡（2 训练 + 2 引擎）已在阶段 6 跑通（当时用 disk-delta，现已改为 broadcast）。
 
 完成定义（四条同时成立）：① 3 个 rollout 跑完并能从 checkpoint 续跑；② 改动拆成 PR 1–4 提交上游；
 ③ `docs/hardware-platforms/ascend-npu.md` 能让另一台同栈机器从 `prepare` 走到 `train`；④ 默认 CUDA 路径 CPU 测试仍通过。
@@ -161,7 +163,7 @@ python -m sglang.launch_server \
 | 提交 | 内容 |
 | --- | --- |
 | `085d3d8a` | `feat(npu)`：新增 `miles/platforms/npu.py` 与 `MILES_ACCELERATOR=npu` 选择，含 CPU 单测 |
-| `483d20e8` | `fix(weight-update)`：disk-delta 里 `torch.cuda.current_stream / current_device` 改 `torch.accelerator` |
+| `483d20e8` | `fix(weight-update)`：disk-delta 的 accelerator 修复（该路径已在 `8ad6e2ee` 移除，此提交被还原） |
 | `dd7140ef` | `fix(fsdp)`：actor/checkpoint 的 `current_device`、`empty_cache`、`synchronize`、RNG 改 `torch.accelerator` |
 | `158f554c` | `fix(fsdp)`：`init_device_mesh` 的 `"cuda"` 改 `current_platform.device_type`（否则 `torch._C._cuda_setDevice` 崩） |
 | `4aa155c9` | `docs(npu)`：新增 `scripts/npu/run_qwen3_5_4b_fsdp.py` 与 `scripts/npu/README.md` |
@@ -173,16 +175,16 @@ python -m sglang.launch_server \
 | 文件 | 原因 |
 | --- | --- |
 | `miles/utils/memory_utils.py`、`miles/backends/fsdp_utils/actor.py` | 本机 `torch.accelerator` 的显存接口报 `Allocator for npu is not a DeviceAllocator`，改走 `torch.npu` |
-| `miles/backends/fsdp_utils/adaptations/precision.py`、`actor.py` | `from_pretrained` 按 `config.dtype=bfloat16` 把 48 个文件里的 fp32 张量（GDN 的 `A_log`、`norm.weight`）转成 bf16，disk-delta 基线校验失败 |
+| `miles/backends/fsdp_utils/adaptations/precision.py`、`actor.py` | `from_pretrained` 按 `config.dtype=bfloat16` 把 48 个文件里的 fp32 张量（GDN 的 `A_log`、`norm.weight`）转成 bf16，权重同步发送的 dtype 与 checkpoint 不一致（当时在 disk-delta 上暴露） |
 | `miles/backends/fsdp_utils/hf_weight_iterator.py` | `tie_word_embeddings` 使 `state_dict` 带上 `lm_head.weight`，safetensors 里没有这个名字 |
-| `miles/utils/arguments.py` | disk-delta 把带 `latest_checkpointed_iteration.txt` 的 `--load` 一律拒绝；FSDP 也写这个文件。拒绝只保留给 Megatron |
+| `miles/utils/arguments.py` | disk-delta 的 `--load` 门槛（该路径已在 `8ad6e2ee` 移除，此改动被还原） |
 | `miles/backends/fsdp_utils/checkpoint.py` | 纯文本步不会给视觉塔留下 Adam 状态，空优化器加载时却为每个可训练参数建状态。优化器加载改为 `allow_partial_load` |
 
 另外，库存 SGLang 0.5.23 没有 `/pull_weights`。接收端是环境里的本地补丁（`sglang_npu_pull_weights.py` 以及 `http_server.py` 上的路由），不在本仓库。重装 SGLang 会丢掉它。
 
 `NpuPlatform` 的取值：`device_type=npu`、`compile_backend=eager`、`triton_kernels=False`、`flex_attention=False`、
 `dynamic_shapes=False`、`nvml_numa_affinity=False`、`rooted_reduce=False`、`premul_sum_reduce=False`、
-`weight_transfer_modes={'disk-delta','broadcast'}`、`process_group_backend='hccl'`、`prefill_weight_versions=False`、`rollout_kv_cache_dtype=bfloat16`；
+`weight_transfer_modes={'broadcast'}`、`process_group_backend='hccl'`、`prefill_weight_versions=False`、`rollout_kv_cache_dtype=bfloat16`；
 设备绑定发生在建进程组**之前**（HCCL 在 `init_process_group` 时读当前设备，和 TPU 相反）。
 
 启动器 `scripts/npu/run_qwen3_5_4b_fsdp.py`（结构对齐 `scripts/tpu/`）：子命令 `prepare` / `sglang` / `train` /
@@ -246,7 +248,7 @@ Ray 资源不需要改 `miles/ray/*`：`execute_train` 会执行 `ray start --nu
 
 引擎在 5 卡、端口 31001。训练在 6 卡，任务 `raysubmit_5CFdwcNYBUS5Pbr1`，`--num-rollout 1`，`--extra-args "--update-weight-transfer-mode broadcast"`，22:11 退出码 0。保存目录是 `/home/weichunyu/miles-950/checkpoints-broadcast`，写出 `iter_0000001`。
 
-引擎日志是 `init custom process group ... backend=hccl`，`init_weights_update_group` 返回 200。训练前的送回走 `/update_weights_from_distributed`，17 个 bucket、1.6 s，全部 200，随后 `update_weight_version` 200。rollout 0：16/16，回答长度 1005，截断 0.875，raw reward 0.125，`weight_version` 1。step 0：`grad_norm` 1.152，`loss` 约 0。这是一次真实的 HCCL 权重组，不是把 `nccl` 字符串留在原地。2 个引擎的 broadcast 没有测。`NpuPlatform.weight_transfer_modes` 因此包含 `disk-delta` 和 `broadcast`。启动器默认仍是 `disk-delta`。
+引擎日志是 `init custom process group ... backend=hccl`，`init_weights_update_group` 返回 200。训练前的送回走 `/update_weights_from_distributed`，17 个 bucket、1.6 s，全部 200，随后 `update_weight_version` 200。rollout 0：16/16，回答长度 1005，截断 0.875，raw reward 0.125，`weight_version` 1。step 0：`grad_norm` 1.152，`loss` 约 0。这是一次真实的 HCCL 权重组，不是把 `nccl` 字符串留在原地。2 个引擎的 broadcast 当时没有测（2026-11-25 已补测通过，见 §13）。当时 `weight_transfer_modes` 含 `disk-delta` 与 `broadcast`；现在只保留 `broadcast`。
 
 ### 默认 CUDA 路径 CPU 测试（2026-11-23）
 
@@ -275,7 +277,7 @@ PR 说明附本机日志（探针 A/B/C/D、rollout 的 loss/reward、`npu-smi` 
 | `torch_npu` 与 CANN 9.2.0 不匹配 | 已用 `2.10.0.post7` 通过单卡矩阵乘、探针 C/D。报 CANN 版本错误就停在当前环境换轮子，不改系统 CANN |
 | 9.1 的 `sgl-kernel-npu` 在 9.2.0 上加载失败 | 导入与 Gemma RMSNorm 已通过；某算子失败则用 `/home/pkg/cann920/cann-9.2.0` 按 `Ascend950PR_9599` 重编，编不过就停 |
 | 训练出现未实现算子 | 记算子名/shape/CANN 报错；能用 PyTorch 组合替代就替代并加数值对照，不能就缩短序列，不改模型结构 |
-| HCCL 超时或挂起 | 端到端继续用 `disk-delta` + 单卡训练，集合通信不作为闭环前提 |
+| HCCL 超时或挂起 | 停在 broadcast 这一步，先用单卡 debug-train 验证训练循环；不再提供 disk-delta 退路 |
 | checkpoint 写进根分区 | 停。只写 `/home/weichunyu/miles-950`（NFS 符号链接）；一个 `iter_*` 约 51 GB |
 | 目标卡被别人占用 | 换仍空闲的卡并改 `ASCEND_RT_VISIBLE_DEVICES`，不杀已有进程 |
 | 共享代码里出现新的 CUDA 调用 | 按多硬件规则改到 `current_platform` / `torch.accelerator`；一处调用要扩成大段 `if npu` 时，把差异收回 `NpuPlatform` |
@@ -291,7 +293,7 @@ PR 说明附本机日志（探针 A/B/C/D、rollout 的 loss/reward、`npu-smi` 
 
 ## 12. 文档命令复跑与修改必要性（2026-11-24）
 
-> **2026-11-25 更新：默认权重路径改为 `broadcast`，本节 V2–V4 的实验改按 §13 执行；`disk-delta` 只有在补上 `/pull_weights` 接收端后才使用。**
+> **2026-11-26 更新：本分支只保留 `broadcast`，`disk-delta` 连同 `/pull_weights` 前置条件一起移除；本节 V2–V4 若重跑，按 §13 的 W2–W4 执行。**
 
 远端与本地都在 `bebb8560`。工作目录 `/home/weichunyu/miles-950/doc-verify`，模型与数据用符号链接接到文档里的相对路径。检查点不写阶段 5 / 阶段 6 的目录。
 
@@ -306,7 +308,7 @@ PR 说明附本机日志（探针 A/B/C/D、rollout 的 loss/reward、`npu-smi` 
 | `source set_env.sh`，`python -c "import torch, torch_npu; ..."`，`npu-smi info` | 硬件页 Verify | 已跑 | 用的是本机那份 `set_env.sh`，不是容器路径。结果见下表 |
 | `prepare`、`sglang`、`train`、续跑、4 卡 | 硬件页 Launch，以及 `scripts/npu/README.md` | 见 V0–V4 | `prepare` 已过。其余未跑 |
 | `debug-data`、`debug-train` | `scripts/npu/README.md` 正文；启动器文件头有完整命令 | 见 V0、V1 | `debug-data` 已过。`debug-train` 未跑 |
-| `--extra-args "--update-weight-transfer-mode broadcast"` | 两篇文档的说明，不是独立步骤 | 不补跑 | 1 训练卡 + 1 引擎已经测过。2 引擎 broadcast 两篇都写明没跑 |
+| `--update-weight-transfer-mode broadcast`（现在是默认，不需要额外参数） | 两篇文档的说明，不是独立步骤 | 不补跑 | 已是唯一路径；2 引擎 broadcast 于 2026-11-25 补测通过（§13） |
 
 不占卡的三条已经按文档跑过：
 
@@ -339,47 +341,44 @@ ln -sfn /mnt/share/dataset/dapo-math-17k/dapo-math-17k.jsonl dapo-math-17k.jsonl
 跑的时候另外看这几条：
 
 - `debug-data` 按默认 4×4 写了 16 条；`debug-train` 内部把 batch 和 n 改成 2 和 2，全局 batch 是 4。V1 若因为条数对不上失败，就在 `debug-train` 目录里用 `--rollout-batch-size 2 --n-samples-per-prompt 2` 重写 `debug-data`，再跑 `debug-train`。
-- disk-delta 依赖当前环境里的 `/pull_weights`，不在 miles 的 diff 里。V2、V3、V4 开跑前确认这个路由还在。两个引擎共用一个 `rollout-checkpoint` 时，接收端必须记下已应用的版本；没有这条就给每个引擎单独的 `--local-checkpoint-dir`。
-- `broadcast` 不在这次必跑里。文档写的是 1 个训练卡加 1 个引擎已经测过，命令是 `--extra-args "--update-weight-transfer-mode broadcast"`。2 引擎的 broadcast 文档写明没跑，这次也不补。
+- 权重只走 `broadcast`，不需要 `/pull_weights`，也没有 `--local-checkpoint-dir` 之类的磁盘目录参数。
+- `broadcast` 是默认路径，不需要 `--extra-args`；1+1 与 2 引擎都已测过（§13）。
 - 启动器会 `ray stop` 再 `ray start`，`graceful_ray_stop=True`，不会把另一边的 SGLang 杀掉。机器上已有别人的 Ray 时不要启动。端口 31001、31002 被占就换 `--sglang-port`，并让 `train` 用同一个端口。
 
-相对 `main`（`fa13e2ec`）的代码改动，必要性按「没有它这条路径会不会坏」来记。通用是指 CUDA 仍走原来的值，差异放在平台上，或者换一台 CUDA 机器跑同一模型、同一条 FSDP disk-delta 也会碰到。
+相对 `main`（`fa13e2ec`）的代码改动，必要性按「没有它这条路径会不会坏」来记。通用是指 CUDA 仍走原来的值，差异放在平台上，或者换一台 CUDA 机器跑同一模型、同一条 FSDP 权重同步路径也会碰到。
 
 | 文件 | 必要 | 通用在哪 |
 | --- | --- | --- |
 | `miles/platforms/npu.py` | 必要。没有它就没有 `MILES_ACCELERATOR=npu` | NPU 自己的能力表。CUDA 不导入这个文件 |
 | `miles/platforms/__init__.py` | 必要。选择 NPU，并给基类 `process_group_backend`，CUDA 默认仍是 `nccl` | 和 TPU 的选择方式相同 |
 | `miles/backends/fsdp_utils/parallel.py` | 必要。mesh 原来写死 `cuda` | `current_platform.device_type`，CUDA 仍是 `cuda` |
-| `broadcast.py` | 必要，针对已测过的 HCCL broadcast。两边直接构造 backend，不经过 `torch_npu` 的 nccl→hccl 包装 | 后端名来自平台。CUDA 仍是 `nccl`。disk-delta 不走这里 |
-| `delta.py` | 必要。disk-delta 的同步和 device 原来写死 `torch.cuda` | `torch.accelerator`，CUDA 上就是 cuda |
+| `broadcast.py` | 必要，针对已测过的 HCCL broadcast。两边直接构造 backend，不经过 `torch_npu` 的 nccl→hccl 包装 | 后端名来自平台。CUDA 仍是 `nccl`。权重同步走这里 |
+| `delta.py` | 已移除（`8ad6e2ee` 还原）。原为 disk-delta 的 `torch.cuda` 修复 | — |
 | `miles/utils/memory_utils.py` | 必要。这台 `torch_npu` 的缓存分配器不是 c10 `DeviceAllocator`，`torch.accelerator` 的显存接口会断言 | CUDA 仍走原来的成功路径，只有报 `not a DeviceAllocator` 才回退 |
 | `actor.py` 的设备与 `empty_cache` | 必要。否则模型放到 CUDA 设备上 | `current_platform` / `empty_cache` |
-| `precision.py` 的 dtype 对齐，以及 `actor.py` 里的那次调用 | 必要，原因是 Qwen3.5，不是 NPU。`from_pretrained` 把文件里的 fp32 收成 bf16，disk-delta 按原始字节对不上 | CUDA 上同一模型、同一条 FSDP disk-delta 也会被拒 |
+| `precision.py` 的 dtype 对齐，以及 `actor.py` 里的那次调用 | 必要，原因是 Qwen3.5，不是 NPU。`from_pretrained` 把文件里的 fp32 收成 bf16，权重同步会发错 dtype | CUDA 上同一模型、同一条 FSDP 权重同步路径也会碰到 |
 | `precision.py` 的 autocast | 必要，作为平台规则。这次默认精度策略没有走到它 | `current_platform.device_type`，CUDA 仍是 `cuda` |
-| `hf_weight_iterator.py` | 必要，原因是绑名。`lm_head.weight` 不在 safetensors 里 | 任何设备上用 disk-delta 导出这个模型都会被拒 |
+| `hf_weight_iterator.py` | 必要，原因是绑名。`state_dict` 会重复输出 `lm_head.weight` | 任何设备上同步这个模型都会多发一份 |
 | `checkpoint.py` 的 `allow_partial_load` | 必要，原因是视觉塔。纯文本步没有它的 Adam 状态 | CUDA 上续跑这个模型同样过不了 |
 | `checkpoint.py` 加载失败后 `raise` | 必要，为了续跑失败时不要接着训。上游原来吞掉异常 | 任何设备的 FSDP 续跑都变成失败即中断 |
 | `checkpoint.py` 的 RNG 和 `synchronize` | 必要。`torch.cuda.get_rng_state_all` 在 NPU 上不可用 | CUDA 的 RNG 仍写在 `"cuda"` 键下 |
-| `miles/utils/arguments.py` | 必要。FSDP 和 Megatron 共用 tracker 文件名，disk-delta 原来一律拒绝 `--load` | 拒绝只留给 `train_backend == "megatron"`。CUDA 上的 FSDP disk-delta 续跑原来也会被拒 |
+| `miles/utils/arguments.py` | 已移除（`8ad6e2ee` 还原）。当时 disk-delta 会误拒 FSDP 的 `--load` | — |
 | checkpoint 测试夹具的 `planner` | 必要，而且这个 `TypeError` 是我们加上 `planner` 之后才有的 | 只让假的 `dcp.load` 接住新参数 |
 | `tests/fast/utils/test_platforms.py` | 必要。锁住 NPU 的能力，并保证默认 CUDA 不导入 NPU 平台 | 不改 CUDA 的运行路径 |
 
-SGLang 侧不在 miles 的 diff 里。disk-delta 依赖装在环境里的 `/pull_weights` 接收端；`broadcast` 的 1+1 测量不依赖它。
+SGLang 侧不在 miles 的 diff 里。权重只走 `broadcast`，不需要 `/pull_weights`。
 
-## 13. 默认权重路径改为 broadcast（2026-11-25）
+## 13. 权重路径：只保留 broadcast
 
-从 2026-11-25 起，默认权重回传使用平台的 `broadcast`（HCCL 权重组），不再默认 `disk-delta`。
+2026-11-25 起，权重回传统一使用平台的 `broadcast`（HCCL 权重组），默认如此，也是唯一支持的方式。
 
 理由：
 
 1. `broadcast` 是 Miles 的默认模式，CUDA 上走 NCCL、NPU 上走 HCCL（`broadcast.py` 用 `current_platform.process_group_backend`），不需要任何引擎侧磁盘接收端；
 2. `disk-delta` 依赖 SGLang 安装目录里的 `/pull_weights` 接收端，它不在 Miles 仓库里、重装 SGLang 就会消失，换机器后已不可用；
-3. NPU 上 broadcast 已实测：1 训练卡 + 1 引擎，`init custom process group ... backend=hccl`，17 个 bucket、1.6 s、全部 200。
+3. NPU 上的 HCCL 权重组已在 1 训练卡 + 1 引擎、以及 2 训练卡 + 2 引擎上验证。
 
-对应改动：
-
-- `scripts/npu/run_qwen3_5_4b_fsdp.py` 的 `WEIGHT_TRANSFER_MODE` 改为 `broadcast`，不再向 `train.py` 传 `--update-weight-disk-dir` / `--update-weight-local-checkpoint-dir`；
-- `docs/hardware-platforms/ascend-npu.md` 与 `scripts/npu/README.md` 同步：broadcast 为默认，disk-delta 降为可选（需 `/pull_weights`）。
+2026-11-26 的收敛（`8ad6e2ee`）：`delta.py` 的两处 accelerator 修复与 `arguments.py` 的 `--load` 门槛被还原；启动器删除 `--update-weight-disk-dir` / `--update-weight-local-checkpoint-dir` 及其字段；`NpuPlatform.weight_transfer_modes` 只声明 `broadcast`；`ascend-npu.md` 与 `scripts/npu/README.md` 里 disk-delta 的段落删除。dtype 对齐与 tied 权重跳过保留，因为共享的权重迭代器对每种传输方式都会执行它们。
 
 ### 新机器的实验步骤（按 broadcast）
 
@@ -393,11 +392,11 @@ SGLang 侧不在 miles 的 diff 里。disk-delta 依赖装在环境里的 `/pull
 | W1 | 1 | `debug-train --trainer-device <空闲卡>`（不启 SGLang） | 退出码 0；`checkpoints/iter_0000001` 约 51 GB；4 步 loss/grad_norm 有限 |
 | W2 | 2 | 引擎 1 卡 `sglang --engine-device <B>`；训练 1 卡 `train --trainer-device <A> --engine-device <B>`（默认 broadcast） | 3 个 rollout 退出码 0；日志出现 `init custom process group ... backend=hccl`；weight version 递增 |
 | W3 | 2 | 同 W2 目录，`--num-rollout 4 --extra-args "--load checkpoints"` | 从 `iter_0000003` 载入并跑完 rollout 3，写出 `iter_0000004` |
-| W4 | 4 | 引擎两卡（31001/31002）；训练两卡 `--trainer-device <A>,<B> --engine-device <C>,<D>` | 退出码 0；两个引擎都收到权重；FSDP `world_size` 2。**2 引擎 broadcast 尚未验证过** |
+| W4 | 4 | 引擎两卡（31001/31002）；训练两卡 `--trainer-device <A>,<B> --engine-device <C>,<D>` | 退出码 0；两个引擎都收到权重；FSDP `world_size` 2（2026-11-25 已验证，见下表） |
 
 注意：
 
-- W2/W4 若某一步失败且日志指向 `/pull_weights` 或磁盘目录，说明仍有代码在走 disk-delta，停下来核对 `--update-weight-transfer-mode`；
+- W2/W4 的启动日志里应只有 `--update-weight-transfer-mode broadcast`；出现 `/pull_weights` 或磁盘目录参数就说明跑的是旧代码；
 - 一个 4B Adam checkpoint 约 51 GB，`--save-interval` 保持 3 或更大，跑完清理旧 `iter_*`；
 - 启动器会 `ray stop` 再 `ray start`（`graceful_ray_stop=True`），不会杀掉另一 shell 的 SGLang。
 

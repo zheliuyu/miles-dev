@@ -70,13 +70,9 @@ python -m pip install -e /path/to/miles
 python -m pip install transformers==5.19.0 "numpy==1.26.4"
 ```
 
-The default weight path is the HCCL `broadcast` weight group, which needs nothing beyond the packages
-above. `disk-delta` is the optional alternative: SGLang 0.5.23 has no disk-delta receiver, so it needs
-a `/pull_weights` handler in that install (version 0 copies the HF checkpoint into the engine-local
-directory, later versions apply the published zstd deltas, and Miles then calls the stock
-`/update_weights_from_disk`). Two engines that share one local directory also have to record the applied
-version and skip a repeat, or the second pull xors the same delta again. That handler is not part of
-Miles, and reinstalling SGLang removes it.
+The weight path is the HCCL `broadcast` weight group, which needs nothing beyond the packages above.
+`disk-delta` is not part of this path: SGLang 0.5.23 ships no `/pull_weights` receiver, so the engine
+cannot apply published deltas.
 
 ## Verify
 
@@ -94,8 +90,7 @@ into `ASCEND_RT_VISIBLE_DEVICES`. Leave a card that already has a process alone.
 Paths are relative to the working directory: `--model-path Qwen3.5-4B`, `--data-path
 dapo-math-17k.jsonl`, and `--save-dir checkpoints`. `prepare` checks the checkpoint and the prompt file
 and does not download them. One 4B Adam checkpoint is about 51 GB, so run from a filesystem that can
-hold it. Pick cards that `npu-smi info` shows as empty. The `--weight-disk-dir` and
-`--local-checkpoint-dir` flags apply only to `disk-delta`.
+hold it. Pick cards that `npu-smi info` shows as empty.
 
 ```bash
 python scripts/npu/run_qwen3_5_4b_fsdp.py prepare
@@ -121,10 +116,8 @@ python scripts/npu/run_qwen3_5_4b_fsdp.py sglang --engine-device 3 --sglang-port
 python scripts/npu/run_qwen3_5_4b_fsdp.py train --trainer-device 0,1 --engine-device 2,3
 ```
 
-`broadcast` is the default and the measured path for the 2-card loop (one trainer card plus one
-engine) and the 4-card loop (two trainers, two engines). Pass `--extra-args
-"--update-weight-transfer-mode disk-delta"` to use the disk-based alternative, which needs the
-`/pull_weights` handler described above. Colocate stays off: it depends on CUDA IPC.
+`broadcast` is the only weight path and is measured for the 2-card loop (one trainer card plus one
+engine) and the 4-card loop (two trainers, two engines). Colocate stays off: it depends on CUDA IPC.
 
 ## Next steps
 
