@@ -20,9 +20,8 @@ class NpuPlatform(Platform):
     # Probe B measured HCCL dist.reduce. PREMUL_SUM is unmeasured, so a non-default gradient divide stays on all_reduce.
     rooted_reduce = True
     premul_sum_reduce = False
-    # disk-delta is the default path. broadcast was measured on one trainer card and one engine: the HCCL group
-    # came up and the engine accepted the tensors.
-    weight_transfer_modes = frozenset({"disk-delta", "broadcast"})
+    # The HCCL weight group is the only transfer mode this path uses; it was measured on 2 and 4 cards.
+    weight_transfer_modes = frozenset({"broadcast"})
     process_group_backend = "hccl"
     # SGLang 0.5.23 has no --enable-prefill-weight-versions.
     prefill_weight_versions = False

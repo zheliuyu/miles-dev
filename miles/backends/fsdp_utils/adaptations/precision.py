@@ -89,8 +89,8 @@ def align_sync_dtypes_to_checkpoint(model, checkpoint_path: str) -> int:
     """Point outbound weight sync at the checkpoint file dtype.
 
     ``from_pretrained`` applies ``config.dtype`` and can turn an fp32 tensor into bf16 before
-    ``apply_fp32_master`` records it. Disk-delta then rejects the publish, because it diffs raw
-    safetensors bytes. Returns how many recorded dtypes were corrected.
+    ``apply_fp32_master`` records it, so the weight group would send bf16 where the engine holds
+    fp32. Returns how many recorded dtypes were corrected.
     """
     sync_dtypes = getattr(model, "_fsdp_sync_dtypes", None)
     if not sync_dtypes:

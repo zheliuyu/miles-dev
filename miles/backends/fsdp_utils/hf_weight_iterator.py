@@ -25,7 +25,8 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
         """Names that share storage with another parameter and are omitted from the checkpoint.
 
         Qwen3.5 ties ``lm_head.weight`` to the token embedding. ``state_dict`` still emits the alias,
-        but the safetensors file does not, and disk-delta rejects any name the file does not store.
+        but the checkpoint stores one tensor for the pair, so the weight sync would send the same bytes
+        twice under two names.
         """
         tied = getattr(self.model, "_tied_weights_keys", None)
         if isinstance(tied, dict):

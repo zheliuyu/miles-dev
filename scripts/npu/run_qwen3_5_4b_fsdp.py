@@ -37,7 +37,7 @@ import typer
 from miles.utils.external_utils import command_utils
 
 SEQ_LEN = 2048
-# NpuPlatform.weight_transfer_modes; broadcast is the default and needs no engine-side /pull_weights handler
+# NpuPlatform.weight_transfer_modes; broadcast is the only mode this path uses
 WEIGHT_TRANSFER_MODE = "broadcast"
 
 
@@ -58,9 +58,6 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     save_dir: str = "checkpoints"
     # one 4B Adam checkpoint is about 51 GB; run from a filesystem that can hold it
     save_interval: int = 3
-    # disk-delta refuses to start without both directories
-    weight_disk_dir: str = "weight-delta"
-    local_checkpoint_dir: str = "rollout-checkpoint"
     debug_data_dir: str = "debug-rollout"
     extra_args: str = ""
     # the engine runs in its own shell; a run must not SIGKILL it, which the backend's default cleanup does
@@ -325,13 +322,6 @@ def train(args: ScriptArgs):
     os.environ.setdefault("NCCL_NVLS_ENABLE", "0")
     engine_cards = _cards(args.engine_device)
     engine_addrs = " ".join(f"http://127.0.0.1:{args.sglang_port + index}" for index in range(len(engine_cards)))
-    # the disk directories matter only to disk-delta; broadcast moves the bytes over the weight group instead
-    delta_args = (
-        f"--update-weight-disk-dir {args.weight_disk_dir} "
-        f"--update-weight-local-checkpoint-dir {args.local_checkpoint_dir} "
-        if WEIGHT_TRANSFER_MODE == "disk-delta"
-        else ""
-    )
     train_args = " ".join(
         [
             f"--hf-checkpoint {args.model_path}",
@@ -343,7 +333,6 @@ def train(args: ScriptArgs):
             f"--rollout-num-gpus {len(engine_cards)}",
             "--rollout-num-gpus-per-engine 1",
             f"--update-weight-transfer-mode {WEIGHT_TRANSFER_MODE}",
-            delta_args,
             _train_backend_args(args),
             _misc_args(args),
             args.extra_args,

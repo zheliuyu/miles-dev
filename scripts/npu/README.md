@@ -23,9 +23,9 @@ defers its torch import.
 
 One launcher, `run_qwen3_5_4b_fsdp.py`, for Qwen3.5-4B with FSDP and an external SGLang engine. Paths
 are relative to the working directory: `--model-path Qwen3.5-4B`, `--data-path dapo-math-17k.jsonl`,
-`--save-dir checkpoints`, `--weight-disk-dir weight-delta`, and `--local-checkpoint-dir
-rollout-checkpoint`. `prepare` checks the checkpoint and the prompt file and does not download them.
-The steps below use one trainer card and one engine card. Pick cards that `npu-smi info` shows as empty.
+and `--save-dir checkpoints`. `prepare` checks the checkpoint and the prompt file and does not download
+them. The steps below use one trainer card and one engine card. Pick cards that `npu-smi info` shows as
+empty.
 
 1. Check the model and the dataset:
 
@@ -71,13 +71,10 @@ uses a uniform reward, so `train/loss` and `grad_norm` are 0. The check covers t
 
 - **Pick free cards.** `npu-smi info` shows which cards have processes. The launcher writes only the ids
   you pass into `ASCEND_RT_VISIBLE_DEVICES`. Leave a card that already has a process alone.
-- **`broadcast` is the default.** The trainer and the engines build a HCCL weight group; the 2-card
-  loop and the 4-card loop (two engines) both ran end to end (`init custom process group ... backend=hccl`).
-- **`disk-delta` is the optional alternative and needs a `/pull_weights` handler in the SGLang install.**
-  SGLang 0.5.23 does not ship one. Version 0 copies the HF checkpoint into the engine-local directory, and
-  later versions apply the zstd deltas. Two engines that share that directory must record the applied
-  version and skip a repeat, or the second pull xors the same delta again. The handler is outside Miles and
-  disappears if SGLang is reinstalled. Without it, keep the default `broadcast`.
+- **`broadcast` is the only weight path.** The trainer and the engines build a HCCL weight group; the
+  2-card loop and the 4-card loop (two engines) both ran end to end (`init custom process group ...
+  backend=hccl`). `disk-delta` is not offered: SGLang 0.5.23 ships no `/pull_weights` receiver, so the
+  engine cannot apply the published deltas.
 - **Ray needs a high file-descriptor limit.** With `ulimit -n` at the host default (1024) the raylet dies
   with `epoll: Too many open files` and `ray job submit` fails with a 500. Run `ulimit -n 1048576` before
   starting the launcher.
