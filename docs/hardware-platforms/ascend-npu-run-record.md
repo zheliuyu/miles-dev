@@ -291,6 +291,8 @@ PR 说明附本机日志（探针 A/B/C/D、rollout 的 loss/reward、`npu-smi` 
 
 ## 12. 文档命令复跑与修改必要性（2026-11-24）
 
+> **2026-11-25 更新：默认权重路径改为 `broadcast`，本节 V2–V4 的实验改按 §13 执行；`disk-delta` 只有在补上 `/pull_weights` 接收端后才使用。**
+
 远端与本地都在 `bebb8560`。工作目录 `/home/weichunyu/miles-950/doc-verify`，模型与数据用符号链接接到文档里的相对路径。检查点不写阶段 5 / 阶段 6 的目录。
 
 这次改过的文档里，带可执行命令的只有两篇：`docs/hardware-platforms/ascend-npu.md` 和 `scripts/npu/README.md`。`overview.md` 和仓库根 `README.md` 只链到硬件页，没有命令。镜像、起容器、装包这三段是给一台空机器用的，不在这台已经装好的机器上再执行。
@@ -363,3 +365,38 @@ ln -sfn /mnt/share/dataset/dapo-math-17k/dapo-math-17k.jsonl dapo-math-17k.jsonl
 | `tests/fast/utils/test_platforms.py` | 必要。锁住 NPU 的能力，并保证默认 CUDA 不导入 NPU 平台 | 不改 CUDA 的运行路径 |
 
 SGLang 侧不在 miles 的 diff 里。disk-delta 依赖装在环境里的 `/pull_weights` 接收端；`broadcast` 的 1+1 测量不依赖它。
+
+## 13. 默认权重路径改为 broadcast（2026-11-25）
+
+从 2026-11-25 起，默认权重回传使用平台的 `broadcast`（HCCL 权重组），不再默认 `disk-delta`。
+
+理由：
+
+1. `broadcast` 是 Miles 的默认模式，CUDA 上走 NCCL、NPU 上走 HCCL（`broadcast.py` 用 `current_platform.process_group_backend`），不需要任何引擎侧磁盘接收端；
+2. `disk-delta` 依赖 SGLang 安装目录里的 `/pull_weights` 接收端，它不在 Miles 仓库里、重装 SGLang 就会消失，换机器后已不可用；
+3. NPU 上 broadcast 已实测：1 训练卡 + 1 引擎，`init custom process group ... backend=hccl`，17 个 bucket、1.6 s、全部 200。
+
+对应改动：
+
+- `scripts/npu/run_qwen3_5_4b_fsdp.py` 的 `WEIGHT_TRANSFER_MODE` 改为 `broadcast`，不再向 `train.py` 传 `--update-weight-disk-dir` / `--update-weight-local-checkpoint-dir`；
+- `docs/hardware-platforms/ascend-npu.md` 与 `scripts/npu/README.md` 同步：broadcast 为默认，disk-delta 降为可选（需 `/pull_weights`）。
+
+### 新机器的实验步骤（按 broadcast）
+
+前置：`conda activate miles-950-py312` 或 `source /usr/local/Ascend/ascend-toolkit/set_env.sh`；工作目录每步单独建，模型与数据用符号链接接成文档里的相对路径。
+
+**硬件纪律（每次启动前）**：先 `npu-smi info`，只使用没有进程的空闲卡；没有空闲卡就挂起、不动别人的卡；排队超过 10 分钟仍无空卡则退出本次任务，等人工通知下一次时间。
+
+| 编号 | 卡数 | 做什么 | 通过标准 |
+| --- | --- | --- | --- |
+| W0 | 0 | `prepare`；`debug-data`；硬件页 Verify（`import torch, torch_npu`）；`npu-smi info` | 退出码 0，`debug-rollout/0.pt` 有样本 |
+| W1 | 1 | `debug-train --trainer-device <空闲卡>`（不启 SGLang） | 退出码 0；`checkpoints/iter_0000001` 约 51 GB；4 步 loss/grad_norm 有限 |
+| W2 | 2 | 引擎 1 卡 `sglang --engine-device <B>`；训练 1 卡 `train --trainer-device <A> --engine-device <B>`（默认 broadcast） | 3 个 rollout 退出码 0；日志出现 `init custom process group ... backend=hccl`；weight version 递增 |
+| W3 | 2 | 同 W2 目录，`--num-rollout 4 --extra-args "--load checkpoints"` | 从 `iter_0000003` 载入并跑完 rollout 3，写出 `iter_0000004` |
+| W4 | 4 | 引擎两卡（31001/31002）；训练两卡 `--trainer-device <A>,<B> --engine-device <C>,<D>` | 退出码 0；两个引擎都收到权重；FSDP `world_size` 2。**2 引擎 broadcast 尚未验证过** |
+
+注意：
+
+- W2/W4 若某一步失败且日志指向 `/pull_weights` 或磁盘目录，说明仍有代码在走 disk-delta，停下来核对 `--update-weight-transfer-mode`；
+- 一个 4B Adam checkpoint 约 51 GB，`--save-interval` 保持 3 或更大，跑完清理旧 `iter_*`；
+- 启动器会 `ray stop` 再 `ray start`（`graceful_ray_stop=True`），不会杀掉另一 shell 的 SGLang。
