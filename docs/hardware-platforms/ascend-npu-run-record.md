@@ -419,3 +419,36 @@ SGLang 侧不在 miles 的 diff 里。权重只走 `broadcast`，不需要 `/pul
 ### 清理后的回归（2026-11-26）
 
 - W5：在清理提交 `8ad6e2ee` 之后，2 卡上跑 1 个 rollout，exit 0。启动参数里只有 `--update-weight-transfer-mode broadcast`，`--update-weight-disk-dir` / `--update-weight-local-checkpoint-dir` 出现次数为 0；引擎 `backend=hccl`、`published_version=1`；写出 `iter_0000001`（51 GB）。
+
+## 14. disk-delta：做过的实验与结论（交接）
+
+本 PR 保持最小改动，只把 NPU 闭环需要的 broadcast 路径合入，`disk-delta` 不纳入。但 disk-delta 在 950DT 上做过完整实验，可行性有证据，后续可能继续做，所以单独记在这里交接。
+
+### 做过的实验
+
+| 实验 | 机器与时间 | 卡 | 结果 |
+| --- | --- | --- | --- |
+| 阶段 5 | 旧机器 177.5.25.1，2026-11-23 | 2（训练 1 + 引擎 1） | 3 个 rollout 退出码 0；weight version 1→2→3；从 `iter_0000003` 续跑 rollout 3，写出 `iter_0000004`；引擎侧 `/pull_weights` 与 `/update_weights_from_disk` 均 200 |
+| 阶段 6 | 旧机器，2026-11-23 | 4（训练 2 + 引擎 2） | `world_size` 2；两个引擎都完成拉取与应用；续跑退出码 0，写出 `iter_0000003` |
+| 文档复跑 V2 | 旧机器，2026-11-24 | 2 | 引擎就绪，`POST /pull_weights` 返回 200；训练在 rollout 0 结束前按要求停下，未生成 checkpoint |
+| 新机器复跑 | 177.51.25.1，2026-11-25 起 | — | 未跑。新装的 SGLang 0.5.23 没有 `/pull_weights` 接收端，旧机器上的补丁已随机器回收丢失 |
+
+结论：瓶颈不在 NPU。Triton、FSDP、HCCL 和 950DT 的 8 张卡都正常；卡住的是引擎侧接收端不在 pip 包里。
+
+### 结论
+
+1. **可行**。disk-delta 在 950DT 上能跑通 2 卡与 4 卡闭环，也能从 checkpoint 续跑；推出时每轮 weight version 递增，引擎加载后 `weight_version` 同步更新。
+2. **依赖一个外部接收端**。要装在 SGLang 安装目录（磁盘增量在引擎侧的应用逻辑，`sglang.srt.weight_sync.local_checkpoint` 一带），不在 miles 仓库里；重装 SGLang 就会丢。两个引擎共用一个本地目录时，接收端还必须记录已应用的版本，否则第二次拉取会把同一个 delta 再应用一次。
+3. **需要配套的通用修复**。这些修复在本次适配中写过，后来随 disk-delta 一起从本分支撤下（提交 `8ad6e2ee`）：
+   - `delta.py`：`torch.cuda.current_stream / current_device` 改 `torch.accelerator`；
+   - `arguments.py`：`--load` 的拒绝只应留给 Megatron；FSDP 也写同一个 tracker 文件；
+   - 另外三项是设备无关、被 disk-delta 暴露的缺陷，现在由 broadcast 路径保留：dtype 对齐、tied 权重跳过、优化器 `allow_partial_load` 与加载失败重新抛出。
+4. **存量数据**。旧机器上的 checkpoint（`iter_0000003`、`iter_0000004` 等）随机器回收已丢失；新机器上只保留 broadcast 的 W1、W2、W4、W5 数据。
+
+### 若要继续
+
+1. 先把 `/pull_weights` 接收端装进 SGLang（或拿到补丁），并确认多引擎共用目录时的版本记录；
+2. 恢复本分支撤下的两处改动：`delta.py` 的 accelerator 修复、`arguments.py` 的 `--load` 门槛（可参考 `git revert 8ad6e2ee` 反向恢复）；
+3. 启动器提供传输模式开关，并在 disk-delta 时传 `--update-weight-disk-dir` / `--update-weight-local-checkpoint-dir`；
+4. `NpuPlatform.weight_transfer_modes` 加回 `disk-delta`；
+5. 验证顺序：先在 2 卡上跑 1 个 rollout 确认 `/pull_weights` 返回 200，再跑 4 卡，最后验证续跑。
