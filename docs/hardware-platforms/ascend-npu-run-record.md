@@ -356,9 +356,9 @@ ln -sfn /mnt/share/dataset/dapo-math-17k/dapo-math-17k.jsonl dapo-math-17k.jsonl
 | `delta.py` | 已移除（`8ad6e2ee` 还原）。原为 disk-delta 的 `torch.cuda` 修复 | — |
 | `miles/utils/memory_utils.py` | 必要。这台 `torch_npu` 的缓存分配器不是 c10 `DeviceAllocator`，`torch.accelerator` 的显存接口会断言 | CUDA 仍走原来的成功路径，只有报 `not a DeviceAllocator` 才回退 |
 | `actor.py` 的设备与 `empty_cache` | 必要。否则模型放到 CUDA 设备上 | `current_platform` / `empty_cache` |
-| `precision.py` 的 dtype 对齐，以及 `actor.py` 里的那次调用 | 必要，原因是 Qwen3.5，不是 NPU。`from_pretrained` 把文件里的 fp32 收成 bf16，权重同步会发错 dtype | CUDA 上同一模型、同一条 FSDP 权重同步路径也会碰到 |
+| `precision.py` 的 dtype 对齐，以及 `actor.py` 里的那次调用 | 已移除（`2abd85c6`）。W6 对照证明不修也能通过；只是发送 dtype 与 checkpoint 可能不一致 | — |
 | `precision.py` 的 autocast | 必要，作为平台规则。这次默认精度策略没有走到它 | `current_platform.device_type`，CUDA 仍是 `cuda` |
-| `hf_weight_iterator.py` | 必要，原因是绑名。`state_dict` 会重复输出 `lm_head.weight` | 任何设备上同步这个模型都会多发一份 |
+| `hf_weight_iterator.py` | 已移除（`2abd85c6`）。W6 对照证明多发一份 tied 权重也能通过 | — |
 | `checkpoint.py` 的 `allow_partial_load` | 必要，原因是视觉塔。纯文本步没有它的 Adam 状态 | CUDA 上续跑这个模型同样过不了 |
 | `checkpoint.py` 加载失败后 `raise` | 必要，为了续跑失败时不要接着训。上游原来吞掉异常 | 任何设备的 FSDP 续跑都变成失败即中断 |
 | `checkpoint.py` 的 RNG 和 `synchronize` | 必要。`torch.cuda.get_rng_state_all` 在 NPU 上不可用 | CUDA 的 RNG 仍写在 `"cuda"` 键下 |
@@ -378,7 +378,7 @@ SGLang 侧不在 miles 的 diff 里。权重只走 `broadcast`，不需要 `/pul
 2. `disk-delta` 依赖 SGLang 安装目录里的 `/pull_weights` 接收端，它不在 Miles 仓库里、重装 SGLang 就会消失，换机器后已不可用；
 3. NPU 上的 HCCL 权重组已在 1 训练卡 + 1 引擎、以及 2 训练卡 + 2 引擎上验证。
 
-2026-11-26 的收敛（`8ad6e2ee`）：`delta.py` 的两处 accelerator 修复与 `arguments.py` 的 `--load` 门槛被还原；启动器删除 `--update-weight-disk-dir` / `--update-weight-local-checkpoint-dir` 及其字段；`NpuPlatform.weight_transfer_modes` 只声明 `broadcast`；`ascend-npu.md` 与 `scripts/npu/README.md` 里 disk-delta 的段落删除。dtype 对齐与 tied 权重跳过保留，因为共享的权重迭代器对每种传输方式都会执行它们。
+2026-11-26 的收敛（`8ad6e2ee`）：`delta.py` 的两处 accelerator 修复与 `arguments.py` 的 `--load` 门槛被还原；启动器删除 `--update-weight-disk-dir` / `--update-weight-local-checkpoint-dir` 及其字段；`NpuPlatform.weight_transfer_modes` 只声明 `broadcast`；`ascend-npu.md` 与 `scripts/npu/README.md` 里 disk-delta 的段落删除。随后又用对照实验把 dtype 对齐与 tied 权重跳过也删掉了（`2abd85c6`）：W6 先临时禁用两者跑通，W7 在删除后复跑仍通过。
 
 ### 新机器的实验步骤（按 broadcast）
 
@@ -416,9 +416,12 @@ SGLang 侧不在 miles 的 diff 里。权重只走 `broadcast`，不需要 `/pul
 
 - **Ray 需要高 fd 上限**。本机默认 `ulimit -n` 是 1024，`ray start` 后 raylet 会以 `epoll: Too many open files` 触发 SIGABRT，`ray job submit` 随后报 500/`Server disconnected`。每次启动实验前先 `ulimit -n 1048576`（hard limit 为 524288，root 可直接抬）。
 - **卡是动态的**。W4 开跑时 NPU3 被用户 `jyx` 的 benchmark 占用，按规则避开，改用引擎卡 2 和 4。启动器只写传入的卡号，不碰别人的进程。
+
 ### 清理后的回归（2026-11-26）
 
 - W5：在清理提交 `8ad6e2ee` 之后，2 卡上跑 1 个 rollout，exit 0。启动参数里只有 `--update-weight-transfer-mode broadcast`，`--update-weight-disk-dir` / `--update-weight-local-checkpoint-dir` 出现次数为 0；引擎 `backend=hccl`、`published_version=1`；写出 `iter_0000001`（51 GB）。
+- W6（对照）：临时禁用 dtype 对齐与 tied 跳过，2 卡 1 个 rollout，exit 0；引擎 `update_weights_from_distributed` 18/18 全 200，没有 tied 相关错误，也没有 `Restored … dtypes` 行。
+- W7（删除后）：`2abd85c6` 删除两处改动，2 卡 1 个 rollout，exit 0；18/18 全 200，`published_version=1`，`backend=hccl`，无 `Restored … dtypes` 行，写出 `iter_0000001`。
 
 ## 14. disk-delta：做过的实验与结论（交接）
 
@@ -442,7 +445,7 @@ SGLang 侧不在 miles 的 diff 里。权重只走 `broadcast`，不需要 `/pul
 3. **需要配套的通用修复**。这些修复在本次适配中写过，后来随 disk-delta 一起从本分支撤下（提交 `8ad6e2ee`）：
    - `delta.py`：`torch.cuda.current_stream / current_device` 改 `torch.accelerator`；
    - `arguments.py`：`--load` 的拒绝只应留给 Megatron；FSDP 也写同一个 tracker 文件；
-   - 另外三项是设备无关、被 disk-delta 暴露的缺陷，现在由 broadcast 路径保留：dtype 对齐、tied 权重跳过、优化器 `allow_partial_load` 与加载失败重新抛出。
+   - 设备无关、被 disk-delta 暴露的缺陷里，现在只保留 `checkpoint.py` 的优化器 `allow_partial_load` 与加载失败重新抛出；dtype 对齐与 tied 权重跳过经 W6/W7 对照（见 §13）后从本分支删除（`2abd85c6`）。
 4. **存量数据**。旧机器上的 checkpoint（`iter_0000003`、`iter_0000004` 等）随机器回收已丢失；新机器上只保留 broadcast 的 W1、W2、W4、W5 数据。
 
 ### 若要继续
