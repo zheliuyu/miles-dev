@@ -416,3 +416,6 @@ SGLang 侧不在 miles 的 diff 里。权重只走 `broadcast`，不需要 `/pul
 
 - **Ray 需要高 fd 上限**。本机默认 `ulimit -n` 是 1024，`ray start` 后 raylet 会以 `epoll: Too many open files` 触发 SIGABRT，`ray job submit` 随后报 500/`Server disconnected`。每次启动实验前先 `ulimit -n 1048576`（hard limit 为 524288，root 可直接抬）。
 - **卡是动态的**。W4 开跑时 NPU3 被用户 `jyx` 的 benchmark 占用，按规则避开，改用引擎卡 2 和 4。启动器只写传入的卡号，不碰别人的进程。
+### 清理后的回归（2026-11-26）
+
+- W5：在清理提交 `8ad6e2ee` 之后，2 卡上跑 1 个 rollout，exit 0。启动参数里只有 `--update-weight-transfer-mode broadcast`，`--update-weight-disk-dir` / `--update-weight-local-checkpoint-dir` 出现次数为 0；引擎 `backend=hccl`、`published_version=1`；写出 `iter_0000001`（51 GB）。
