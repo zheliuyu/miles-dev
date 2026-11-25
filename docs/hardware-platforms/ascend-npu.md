@@ -122,9 +122,9 @@ python scripts/npu/run_qwen3_5_4b_fsdp.py train --trainer-device 0,1 --engine-de
 ```
 
 `broadcast` is the default and the measured path for the 2-card loop (one trainer card plus one
-engine). Pass `--extra-args "--update-weight-transfer-mode disk-delta"` to use the disk-based
-alternative, which needs the `/pull_weights` handler described above. A 2-engine broadcast has not
-been run. Colocate stays off: it depends on CUDA IPC.
+engine) and the 4-card loop (two trainers, two engines). Pass `--extra-args
+"--update-weight-transfer-mode disk-delta"` to use the disk-based alternative, which needs the
+`/pull_weights` handler described above. Colocate stays off: it depends on CUDA IPC.
 
 ## Next steps
 

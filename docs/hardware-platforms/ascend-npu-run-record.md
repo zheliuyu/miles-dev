@@ -400,3 +400,20 @@ SGLang 侧不在 miles 的 diff 里。disk-delta 依赖装在环境里的 `/pull
 - W2/W4 若某一步失败且日志指向 `/pull_weights` 或磁盘目录，说明仍有代码在走 disk-delta，停下来核对 `--update-weight-transfer-mode`；
 - 一个 4B Adam checkpoint 约 51 GB，`--save-interval` 保持 3 或更大，跑完清理旧 `iter_*`；
 - 启动器会 `ray stop` 再 `ray start`（`graceful_ray_stop=True`），不会杀掉另一 shell 的 SGLang。
+
+### W0–W4 结果（2026-11-25 深夜至 11-26 凌晨）
+
+全部在本机 `rack12os5`（177.51.25.1）上跑到退出码 0，权重一律走默认 `broadcast`：
+
+| 实验 | 卡 | 结果 |
+| --- | --- | --- |
+| W0 | 0 | `prepare`、`debug-data`（16 条样本）、Verify（`torch 2.10.0+cpu` / `torch_npu 2.10.0.post7`）均 exit 0 |
+| W1 | 1（0） | `iter_0000001` 51 GB，4 步 `train/loss` 与 `grad_norm` 有限，exit 0 |
+| W2 | 2（训练 0 / 引擎 1） | 3 个 rollout、3 个 step，weight version **1→2→3**，引擎日志 `backend=hccl`，单次 `update_weights` 0.5–24.8 s，exit 0，写出 `iter_0000003` |
+| W3 | 2（同目录续跑） | `--num-rollout 4 --load checkpoints`：rollout 3、step 3 完成，写出 `iter_0000004`（`rollout_id=3, next_rollout_id=4`），exit 0 |
+| W4 | 4（训练 0,1 / 引擎 2,4） | **首次验证 2 引擎 broadcast**：两个引擎各 `backend=hccl`、`init_weights_update_group` 1 次、`update_weights_from_distributed` 51 次、`update_weight_version` 3 次；`world_size=2`，exit 0，写出 `iter_0000003` |
+
+环境与操作上的两条注意事项：
+
+- **Ray 需要高 fd 上限**。本机默认 `ulimit -n` 是 1024，`ray start` 后 raylet 会以 `epoll: Too many open files` 触发 SIGABRT，`ray job submit` 随后报 500/`Server disconnected`。每次启动实验前先 `ulimit -n 1048576`（hard limit 为 524288，root 可直接抬）。
+- **卡是动态的**。W4 开跑时 NPU3 被用户 `jyx` 的 benchmark 占用，按规则避开，改用引擎卡 2 和 4。启动器只写传入的卡号，不碰别人的进程。
