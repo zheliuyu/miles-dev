@@ -354,8 +354,8 @@ ln -sfn /mnt/share/dataset/dapo-math-17k/dapo-math-17k.jsonl dapo-math-17k.jsonl
 | `miles/backends/fsdp_utils/parallel.py` | 必要。mesh 原来写死 `cuda` | `current_platform.device_type`，CUDA 仍是 `cuda` |
 | `broadcast.py` | 必要，针对已测过的 HCCL broadcast。两边直接构造 backend，不经过 `torch_npu` 的 nccl→hccl 包装 | 后端名来自平台。CUDA 仍是 `nccl`。权重同步走这里 |
 | `delta.py` | 已移除（`8ad6e2ee` 还原）。原为 disk-delta 的 `torch.cuda` 修复 | — |
-| `miles/utils/memory_utils.py` | 必要。这台 `torch_npu` 的缓存分配器不是 c10 `DeviceAllocator`，`torch.accelerator` 的显存接口会断言 | CUDA 仍走原来的成功路径，只有报 `not a DeviceAllocator` 才回退 |
-| `actor.py` 的设备与 `empty_cache` | 必要。否则模型放到 CUDA 设备上 | `current_platform` / `empty_cache` |
+| `miles/utils/memory_utils.py` | 必要。`torch_npu` 的缓存分配器不是 c10 `DeviceAllocator`，`torch.accelerator` 的显存接口会断言；现在转发到 `Platform.empty_cache` / `Platform.device_memory` | CUDA 仍走 `torch.accelerator`；NPU 的实现收在 `npu.py` |
+| `actor.py` 的设备与 `empty_cache` | 必要。否则模型放到 CUDA 设备上 | `current_platform.current_device()` / `current_platform.empty_cache()` |
 | `precision.py` 的 dtype 对齐，以及 `actor.py` 里的那次调用 | 已移除（`2abd85c6`）。W6 对照证明不修也能通过；只是发送 dtype 与 checkpoint 可能不一致 | — |
 | `precision.py` 的 autocast | 必要，作为平台规则。这次默认精度策略没有走到它 | `current_platform.device_type`，CUDA 仍是 `cuda` |
 | `hf_weight_iterator.py` | 已移除（`2abd85c6`）。W6 对照证明多发一份 tied 权重也能通过 | — |
@@ -423,6 +423,7 @@ SGLang 侧不在 miles 的 diff 里。权重只走 `broadcast`，不需要 `/pul
 - W6（对照）：临时禁用 dtype 对齐与 tied 跳过，2 卡 1 个 rollout，exit 0；引擎 `update_weights_from_distributed` 18/18 全 200，没有 tied 相关错误，也没有 `Restored … dtypes` 行。
 - W7（删除后）：`2abd85c6` 删除两处改动，2 卡 1 个 rollout，exit 0；18/18 全 200，`published_version=1`，`backend=hccl`，无 `Restored … dtypes` 行，写出 `iter_0000001`。
 - W8（收紧后）：`43a40899` 把平台属性与绑卡收敛到接口（`visible_devices_env`、`extra_process_env`、`sglang_attention_backend`、`torch.accelerator.set_device_index`、`(module, class)` 选择表），2 卡 1 个 rollout，exit 0；18/18 全 200，`published_version=1`，`backend=hccl`，写出 `iter_0000001`。
+- W9（显存钩子）：`7bee43ae` 把显存接口收进平台（`empty_cache` / `device_memory`），2 卡 3 个 rollout，exit 0；54/54 次更新 200，版本 1→2→3；日志出现 10 次 `Memory-Usage`，其中 2 次在轮间 `TrainRayActor.clear_memory` 前后，说明 NPU 上该路径被真实执行；写出 `iter_0000003`。
 
 ## 14. disk-delta：做过的实验与结论（交接）
 
