@@ -4,49 +4,22 @@ import logging
 import torch
 import torch.distributed as dist
 
+from miles.platforms import current_platform
+
 logger = logging.getLogger(__name__)
-
-
-def _device_memory():
-    """Stats from the live device module.
-
-    torch.accelerator's memory queries require a c10 DeviceAllocator. torch_npu's
-    caching allocator is not one, so those calls assert on NPU and this module is
-    the fallback.
-    """
-    return getattr(torch, torch.accelerator.current_accelerator().type)
-
-
-def empty_cache() -> None:
-    try:
-        torch.accelerator.empty_cache()
-    except RuntimeError as exc:
-        if "not a DeviceAllocator" not in str(exc):
-            raise
-        _device_memory().empty_cache()
 
 
 def clear_memory(clear_host_memory: bool = False):
     torch.accelerator.synchronize()
     gc.collect()
-    empty_cache()
+    current_platform.empty_cache()
     if clear_host_memory:
         torch._C._host_emptyCache()
 
 
 def available_memory():
     device = torch.accelerator.current_device_index()
-    try:
-        free, total = torch.accelerator.get_memory_info(device)
-        allocated = torch.accelerator.memory_allocated(device)
-        reserved = torch.accelerator.memory_reserved(device)
-    except RuntimeError as exc:
-        if "not a DeviceAllocator" not in str(exc):
-            raise
-        backend = _device_memory()
-        free, total = backend.mem_get_info(device)
-        allocated = backend.memory_allocated(device)
-        reserved = backend.memory_reserved(device)
+    free, total, allocated, reserved = current_platform.device_memory()
     return {
         "gpu": str(device),
         "total_GB": _byte_to_gb(total),

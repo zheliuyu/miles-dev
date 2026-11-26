@@ -50,6 +50,15 @@ class Platform:
     def bind_device_after_process_group(self) -> None:
         pass
 
+    def empty_cache(self) -> None:
+        torch.accelerator.empty_cache()
+
+    def device_memory(self) -> tuple[int, int, int, int]:
+        """free, total, allocated and reserved bytes on the current device."""
+        device = torch.accelerator.current_device_index()
+        free, total = torch.accelerator.get_memory_info(device)
+        return free, total, torch.accelerator.memory_allocated(device), torch.accelerator.memory_reserved(device)
+
     def current_device(self) -> torch.device:
         return torch.device(self.device_type, torch.accelerator.current_device_index())
 

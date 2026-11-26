@@ -19,7 +19,6 @@ from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENA
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.memory_utils import empty_cache
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.replay_base import routing_replay_manager
 from miles.utils.timer import Timer
@@ -316,13 +315,13 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
         if not self.optimizer_cpu_offload:
             self.model.cpu()
-            empty_cache()
+            current_platform.empty_cache()
             dist.barrier(group=get_gloo_group())
         self.ref_model.eval()
         try:
             yield
         finally:
-            empty_cache()
+            current_platform.empty_cache()
             dist.barrier(group=get_gloo_group())
             if not self.optimizer_cpu_offload:
                 self.model.to(current_platform.current_device())

@@ -34,5 +34,14 @@ class NpuPlatform(Platform):
     # Keep the rollout KV cache in bf16 so its logprobs match the bf16 trainer.
     rollout_kv_cache_dtype = "bfloat16"
 
+    def empty_cache(self) -> None:
+        # torch.accelerator's memory calls assert: the npu allocator is not a c10 DeviceAllocator
+        torch.npu.empty_cache()
+
+    def device_memory(self) -> tuple[int, int, int, int]:
+        device = torch.npu.current_device()
+        free, total = torch.npu.mem_get_info(device)
+        return free, total, torch.npu.memory_allocated(device), torch.npu.memory_reserved(device)
+
     def device_name(self) -> str | None:
         return torch.npu.get_device_name() if torch.npu.is_available() else None

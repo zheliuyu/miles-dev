@@ -9,6 +9,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
+from miles.platforms import current_platform
 from torch.distributed.checkpoint import DefaultLoadPlanner
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
@@ -18,12 +19,6 @@ from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 
 logger = logging.getLogger(__name__)
-
-
-def _accelerator_module():
-    """The device module of the current accelerator (torch.cuda, torch.npu, ...) whose RNG state we save."""
-    accelerator = torch.accelerator.current_accelerator()
-    return None if accelerator is None else getattr(torch, accelerator.type, None)
 
 
 class ModelState(Stateful):
@@ -196,9 +191,9 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         rng_state = checkpoint_payload["rng"]
         if "torch" in rng_state:
             torch.set_rng_state(rng_state["torch"])
-        module = _accelerator_module()
-        key = module.__name__.rsplit(".", 1)[-1] if module is not None else None
-        if key is not None and key in rng_state and hasattr(module, "set_rng_state_all"):
+        module = getattr(torch, current_platform.device_type, None)
+        key = current_platform.device_type
+        if module is not None and key in rng_state and hasattr(module, "set_rng_state_all"):
             module.set_rng_state_all(rng_state[key])
 
     metadata = checkpoint_payload.get("metadata") or {}
@@ -263,10 +258,10 @@ def save(actor: Any, iteration: int) -> None:
 
     if dist.get_rank() == 0:
         rng_state = {"torch": torch.get_rng_state()}
-        module = _accelerator_module()
+        module = getattr(torch, current_platform.device_type, None)
         if module is not None and hasattr(module, "get_rng_state_all"):
-            # keyed by the accelerator name, so a CUDA checkpoint keeps writing the "cuda" entry it always wrote
-            rng_state[module.__name__.rsplit(".", 1)[-1]] = module.get_rng_state_all()
+            # keyed by the device type, so a CUDA checkpoint keeps writing the "cuda" entry it always wrote
+            rng_state[current_platform.device_type] = module.get_rng_state_all()
         torch.save(rng_state, checkpoint_dir / "rng.pt")
 
         metadata = {
