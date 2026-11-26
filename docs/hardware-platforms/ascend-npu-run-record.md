@@ -422,6 +422,7 @@ SGLang 侧不在 miles 的 diff 里。权重只走 `broadcast`，不需要 `/pul
 - W5：在清理提交 `8ad6e2ee` 之后，2 卡上跑 1 个 rollout，exit 0。启动参数里只有 `--update-weight-transfer-mode broadcast`，`--update-weight-disk-dir` / `--update-weight-local-checkpoint-dir` 出现次数为 0；引擎 `backend=hccl`、`published_version=1`；写出 `iter_0000001`（51 GB）。
 - W6（对照）：临时禁用 dtype 对齐与 tied 跳过，2 卡 1 个 rollout，exit 0；引擎 `update_weights_from_distributed` 18/18 全 200，没有 tied 相关错误，也没有 `Restored … dtypes` 行。
 - W7（删除后）：`2abd85c6` 删除两处改动，2 卡 1 个 rollout，exit 0；18/18 全 200，`published_version=1`，`backend=hccl`，无 `Restored … dtypes` 行，写出 `iter_0000001`。
+- W8（收紧后）：`43a40899` 把平台属性与绑卡收敛到接口（`visible_devices_env`、`extra_process_env`、`sglang_attention_backend`、`torch.accelerator.set_device_index`、`(module, class)` 选择表），2 卡 1 个 rollout，exit 0；18/18 全 200，`published_version=1`，`backend=hccl`，写出 `iter_0000001`。
 
 ## 14. disk-delta：做过的实验与结论（交接）
 
