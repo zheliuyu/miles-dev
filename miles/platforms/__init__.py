@@ -4,6 +4,7 @@ Everything `torch.accelerator` covers (synchronize, empty_cache, memory stats, t
 """
 
 import functools
+import importlib
 import os
 
 import torch
@@ -13,6 +14,12 @@ class Platform:
     """CUDA, and the base other platforms override: every method is the call main makes on CUDA."""
 
     device_type = "cuda"
+    # the environment variable that narrows the process to a set of devices
+    visible_devices_env = "CUDA_VISIBLE_DEVICES"
+    # environment a launcher sets for every job on this platform
+    extra_process_env: dict[str, str] = {}
+    # the SGLang attention backend this platform serves with; None keeps SGLang's choice
+    sglang_attention_backend: str | None = None
     # the torch.compile backend for model code
     compile_backend = "inductor"
     # Triton kernels (e.g. --log-probs-backend fused) run here
@@ -37,7 +44,8 @@ class Platform:
     rollout_kv_cache_dtype: str | None = None
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
-        torch.cuda.set_device(f"cuda:{local_rank}")
+        # the vendor reads the current device at init_process_group; torch.accelerator maps local_rank to it
+        torch.accelerator.set_device_index(local_rank)
 
     def bind_device_after_process_group(self) -> None:
         pass
@@ -51,21 +59,22 @@ class Platform:
         return torch.cuda.get_device_name() if torch.cuda.is_available() else None
 
 
+# where each non-CUDA platform lives; a module imports its vendor runtime only when it is selected
+_PLATFORM_MODULES = {
+    "npu": ("miles.platforms.npu", "NpuPlatform"),
+    "tpu": ("miles.platforms.tpu", "TpuPlatform"),
+}
+
+
 def _select_platform() -> Platform:
     device_type = os.environ.get("MILES_ACCELERATOR", "cuda")
     if device_type == "cuda":
         return Platform()
-    if device_type == "npu":
-        # imports torch_npu, which CUDA and TPU processes never load
-        from miles.platforms.npu import NpuPlatform
-
-        return NpuPlatform()
-    if device_type == "tpu":
-        # imports torch_tpu, which CUDA processes never load
-        from miles.platforms.tpu import TpuPlatform
-
-        return TpuPlatform()
-    raise ValueError(f"MILES_ACCELERATOR={device_type!r}; expected cuda, npu, or tpu")
+    target = _PLATFORM_MODULES.get(device_type)
+    if target is None:
+        raise ValueError(f"MILES_ACCELERATOR={device_type!r}; expected cuda or one of {sorted(_PLATFORM_MODULES)}")
+    module_name, class_name = target
+    return getattr(importlib.import_module(module_name), class_name)()
 
 
 current_platform = _select_platform()

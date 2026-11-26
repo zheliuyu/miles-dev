@@ -1,6 +1,6 @@
 """Qwen3.5-4B GRPO on one Ascend 950DT host: FSDP trainer and external SGLang.
 
-The jobs are separate processes that the launcher pins with ASCEND_RT_VISIBLE_DEVICES. `--trainer-device` and
+The jobs are separate processes that the launcher pins with the platform visible-devices variable. `--trainer-device` and
 `--engine-device` each take one card (`0`) or a comma-separated list (`0,1`). One `sglang` process serves one
 card; start one process per engine card. Weights return through the platform's default `broadcast` mode, a HCCL
 weight group between the trainer and the engine.
@@ -12,7 +12,7 @@ on a fixed token batch, with no SGLang server, for a first training check.
 Args:
   --model-path: local Qwen3.5-4B checkpoint. Defaults to ./Qwen3.5-4B.
   --data-path: dapo-math-17k jsonl. Defaults to ./dapo-math-17k.jsonl.
-  --trainer-device / --engine-device: physical Ascend card ids, written into ASCEND_RT_VISIBLE_DEVICES.
+  --trainer-device / --engine-device: physical card ids, written into the platform visible-devices variable.
   --sglang-port: port of the engine `train` connects to.
   --num-rollout / --rollout-batch-size / --n-samples-per-prompt: the closed-loop workload.
   --seq-length: trainer sequence length; 2048 keeps the first closed loop inside one card.
@@ -46,7 +46,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     run_id: str = command_utils.create_run_id()
     model_path: str = "Qwen3.5-4B"
     data_path: str = "dapo-math-17k.jsonl"
-    # physical cards; the launcher writes them into ASCEND_RT_VISIBLE_DEVICES for each job
+    # physical cards; the launcher writes them into the platform visible-devices variable for each job
     trainer_device: str = "0"
     engine_device: str = "1"
     sglang_port: int = 31001
@@ -76,17 +76,26 @@ def _cards(value: str) -> list[str]:
     return cards
 
 
+def _platform():
+    # this launcher serves NPU by default; MILES_ACCELERATOR still overrides it
+    os.environ.setdefault("MILES_ACCELERATOR", "npu")
+    from miles.platforms import current_platform
+
+    return current_platform
+
+
 def _trainer_env(args: ScriptArgs) -> dict[str, str]:
+    current_platform = _platform()
+
     return {
-        "MILES_ACCELERATOR": "npu",
+        "MILES_ACCELERATOR": current_platform.device_type,
         # Ray's GPU slot is synthetic. This mask is the physical cards, in local-rank order.
-        "ASCEND_RT_VISIBLE_DEVICES": ",".join(_cards(args.trainer_device)),
+        current_platform.visible_devices_env: ",".join(_cards(args.trainer_device)),
         # Ray must not pin CUDA_VISIBLE_DEVICES to one id: that collapses every rank's local id to 0.
         "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
-        # 950 multimodal attention backend selection, same as the working probe D launch
-        "ASCEND_USE_FIA": "1",
         # skips the launcher's nvidia-smi probe, exactly as the TPU launcher does
         "NCCL_NVLS_ENABLE": "0",
+        **current_platform.extra_process_env,
     }
 
 
@@ -147,11 +156,13 @@ def _misc_args(args: ScriptArgs) -> str:
 
 def serve_sglang(args: ScriptArgs) -> None:
     """Serve the policy on one engine card in the foreground."""
+    current_platform = _platform()
+
     cards = _cards(args.engine_device)
     if len(cards) != 1:
         raise typer.BadParameter("sglang serves one card; start one process per engine card")
-    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = cards[0]
-    os.environ["ASCEND_USE_FIA"] = "1"
+    os.environ[current_platform.visible_devices_env] = cards[0]
+    os.environ.update(current_platform.extra_process_env)
     argv = [
         sys.executable,
         "-m",
@@ -159,9 +170,11 @@ def serve_sglang(args: ScriptArgs) -> None:
         "--model-path",
         args.model_path,
         "--device",
-        "npu",
-        "--attention-backend",
-        "ascend",
+        current_platform.device_type,
+    ]
+    if current_platform.sglang_attention_backend is not None:
+        argv += ["--attention-backend", current_platform.sglang_attention_backend]
+    argv += [
         "--language-only",
         "--dtype",
         "bfloat16",

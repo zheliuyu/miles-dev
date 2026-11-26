@@ -10,7 +10,7 @@ from miles import platforms
 def test_an_unknown_accelerator_is_refused(monkeypatch):
     """Any value but cuda, npu, or tpu would otherwise run the CUDA platform silently."""
     monkeypatch.setenv("MILES_ACCELERATOR", "TPU")
-    with pytest.raises(ValueError, match="expected cuda, npu, or tpu"):
+    with pytest.raises(ValueError, match="expected cuda or one of"):
         platforms._select_platform()
 
 
@@ -21,6 +21,8 @@ def test_the_default_accelerator_is_cuda_and_does_not_load_the_npu_platform(monk
     platform = platforms._select_platform()
     assert platform.device_type == "cuda"
     assert platform.process_group_backend == "nccl"
+    assert platform.visible_devices_env == "CUDA_VISIBLE_DEVICES"
+    assert platform.sglang_attention_backend is None
     assert "miles.platforms.npu" not in sys.modules
 
 
@@ -55,6 +57,9 @@ def test_npu_selects_the_torch_npu_platform(monkeypatch):
     assert platform.premul_sum_reduce is False
     assert platform.weight_transfer_modes == frozenset({"broadcast"})
     assert platform.process_group_backend == "hccl"
+    assert platform.visible_devices_env == "ASCEND_RT_VISIBLE_DEVICES"
+    assert platform.sglang_attention_backend == "ascend"
+    assert platform.extra_process_env == {"ASCEND_USE_FIA": "1"}
     assert platform.prefill_weight_versions is False
     assert platform.dynamic_shapes is False
     assert platform.nvml_numa_affinity is False
