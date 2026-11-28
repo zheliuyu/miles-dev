@@ -16,7 +16,7 @@ def fsdp_checkpoint_sdk(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Simp
         )
         (Path(checkpoint_id) / ".metadata").touch()
 
-    def load(*, state_dict: dict, checkpoint_id: str) -> None:
+    def load(*, state_dict: dict, checkpoint_id: str, planner: object = None) -> None:
         saved = torch.load(Path(checkpoint_id) / "state.pt", weights_only=False)
         for key, wrapper in state_dict.items():
             wrapper.load_state_dict(saved[key])

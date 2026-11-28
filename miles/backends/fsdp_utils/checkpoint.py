@@ -9,10 +9,12 @@ from typing import Any
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
+from torch.distributed.checkpoint import DefaultLoadPlanner
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 from torch.distributed.checkpoint.stateful import Stateful
 
 from miles.backends.training_utils.checkpoint.tracker import CHECKPOINT_TRACKER_FILENAME
+from miles.platforms import current_platform
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 
@@ -135,10 +137,17 @@ def load(actor: Any) -> dict[str, Any] | None:
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
         try:
-            dcp.load(state_dict=optim_state_dict, checkpoint_id=str(optimizer_dir))
+            # A text-only step never materializes Adam state for the vision tower, but a fresh
+            # optimizer initializes state for every trainable parameter before this load.
+            dcp.load(
+                state_dict=optim_state_dict,
+                checkpoint_id=str(optimizer_dir),
+                planner=DefaultLoadPlanner(allow_partial_load=True),
+            )
             logger.info(f"[FSDP] Loaded optimizer from {optimizer_dir}")
         except Exception as e:
             logger.warning(f"[FSDP] Failed to load optimizer from {optimizer_dir}: {e}")
+            raise
     elif load_optimizer:
         logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
 
@@ -182,8 +191,15 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         rng_state = checkpoint_payload["rng"]
         if "torch" in rng_state:
             torch.set_rng_state(rng_state["torch"])
-        if torch.cuda.is_available() and "cuda" in rng_state:
-            torch.cuda.set_rng_state_all(rng_state["cuda"])
+        # the npu runtime has no set_rng_state_all; skip the device RNG instead of failing
+        module = getattr(
+            torch, current_platform.device_type, None
+        )  # config-access-exempt: device module chosen by accelerator type
+        key = current_platform.device_type
+        if (
+            module is not None and key in rng_state and hasattr(module, "set_rng_state_all")
+        ):  # config-access-exempt: the device module may omit this API
+            module.set_rng_state_all(rng_state[key])
 
     metadata = checkpoint_payload.get("metadata") or {}
     iteration = checkpoint_payload.get("iteration")
@@ -197,7 +213,7 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         if actor.args.start_rollout_id is None:
             actor.args.start_rollout_id = iteration
 
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     dist.barrier()
 
 
@@ -207,7 +223,7 @@ def save(actor: Any, iteration: int) -> None:
     Saves model weights and optimizer state to separate directories.
     This allows loading weights without optimizer or deleting optimizer before loading.
     """
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     base_dir = Path(actor.args.backend.save).expanduser()
     step_id = iteration + 1
@@ -247,7 +263,15 @@ def save(actor: Any, iteration: int) -> None:
 
     if dist.get_rank() == 0:
         rng_state = {"torch": torch.get_rng_state()}
-        rng_state["cuda"] = torch.cuda.get_rng_state_all()
+        # the npu runtime has no get_rng_state_all; save only the CPU RNG there
+        module = getattr(
+            torch, current_platform.device_type, None
+        )  # config-access-exempt: device module chosen by accelerator type
+        if module is not None and hasattr(
+            module, "get_rng_state_all"
+        ):  # config-access-exempt: the device module may omit this API
+            # keyed by the device type, so a CUDA checkpoint keeps writing the "cuda" entry it always wrote
+            rng_state[current_platform.device_type] = module.get_rng_state_all()
         torch.save(rng_state, checkpoint_dir / "rng.pt")
 
         metadata = {

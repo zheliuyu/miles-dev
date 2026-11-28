@@ -21,7 +21,7 @@ from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snaps
 
 _SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "launch_scripts" / "py"
 
-_SCRIPTS_IMPORTABLE_ONLY_UNDER_THE_NPU_PATCH = {"scripts/run_qwen3_4b_npu.py"}
+_SCRIPTS_IMPORTABLE_ONLY_UNDER_THE_NPU_PATCH = {"scripts/npu/run_qwen3_4b_megatron.py"}
 
 
 def _glm_checkpoint(sandbox: Path, model_name: str, num_layers: int) -> dict[str, object]:
@@ -54,8 +54,18 @@ def _nemotron_checkpoint(sandbox: Path) -> dict[str, object]:
     return {"model_dir": str(model_dir)}
 
 
+def _npu_checkpoint(sandbox: Path) -> dict[str, object]:
+    model_dir = sandbox / "models"
+    (model_dir / "Qwen3.5-4B").mkdir(parents=True)
+    data_dir = sandbox / "data"
+    (data_dir / "dapo-math-17k").mkdir(parents=True)
+    (data_dir / "dapo-math-17k" / "dapo-math-17k.jsonl").write_text('{"prompt": "1+1", "label": "2"}\n')
+    return {"model_dir": str(model_dir), "data_dir": str(data_dir)}
+
+
 _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, object]]] = {
     "scripts/amd/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2_5layer", 5),
+    "scripts/npu/run_qwen3_5_4b_fsdp.py": _npu_checkpoint,
     "scripts/run_deepseek_v4.py": lambda sandbox: {"model_name": "DeepSeek-V4-Flash-FP8-4layer"},
     "scripts/run_glm5_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5", 78),
     "scripts/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2", 78),
@@ -89,6 +99,7 @@ _HARDWARE_A_RECORDING_REPRESENTS = {
 
 _ENTRYPOINTS_DISABLED_BY_THEIR_OWN_DEFAULTS = {
     ("scripts/run_deepseek_v4.py", "prepare_fp8"),
+    ("scripts/npu/run_qwen3_5_4b_fsdp.py", "prepare"),
 }
 
 _SCRIPTS = [

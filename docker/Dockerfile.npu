@@ -1,0 +1,84 @@
+# Ready-to-run miles image for one Ascend 950DT host.
+#
+# Build from the repository root:
+#   docker pull ascendai/torch-npu:2.13.0-cann9.2.0-950-openeuler24.03-py3.12
+#   docker build -f docker/Dockerfile.npu -t miles-npu:2.13 .
+#
+# The base image ships torch 2.13.0, torch_npu 2.13.0, CANN 9.2.0 and Python 3.12 but not
+# torchvision, Triton, sgl-kernel-npu or SGLang; those are added here. Sources can be
+# overridden for a mirror:
+#   --build-arg PIP_INDEX_URL=... --build-arg ASCEND_INDEX=... --build-arg TORCH_CPU_INDEX=... \
+#   --build-arg SGLANG_REPO=... --build-arg SGLANG_COMMIT=... --build-arg SGL_KERNEL_ZIP=...
+
+FROM ascendai/torch-npu:2.13.0-cann9.2.0-950-openeuler24.03-py3.12
+
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG ASCEND_INDEX=https://mirrors.huaweicloud.com/ascend/repos/pypi
+ARG TORCH_CPU_INDEX=https://download.pytorch.org/whl/cpu
+ARG SGLANG_REPO=https://github.com/sgl-project/sglang.git
+ARG SGLANG_COMMIT=8a834e3b274f8e3e0588b8f2d63d15d42ad7f8ae
+ARG SGL_KERNEL_ZIP=https://github.com/sgl-project/sgl-kernel-npu/releases/download/2026.11.0.post15/sgl-kernel-npu-2026.11.0.post15-torch2.13.0-py312-cann9.2.0-950-aarch64.zip
+
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+ENV SGLANG_BUILD_RUST_EXTS=none
+ENV UV_CONCURRENT_DOWNLOADS=16
+ENV UV_HTTP_TIMEOUT=60
+SHELL ["/bin/bash", "-c"]
+
+# uv resolves and downloads in parallel; pip only installs uv itself
+RUN python -m pip install --no-cache-dir uv
+
+# torchvision must match the image's CPU-only torch
+RUN uv pip install --system --no-cache --no-deps "torchvision==0.28.0+cpu" \
+        --index-url "${TORCH_CPU_INDEX}"
+
+# NPU kernel and memory-saver wheels from the sgl-kernel-npu release
+RUN set -eux; \
+    curl -fsSL "${SGL_KERNEL_ZIP}" -o /tmp/sgl-kernel.zip; \
+    python -c "import zipfile; zipfile.ZipFile('/tmp/sgl-kernel.zip').extractall('/tmp/sgl-kernel')"; \
+    for pat in 'sgl_kernel_npu-*.whl' 'torch_memory_saver-*.whl'; do \
+        for w in /tmp/sgl-kernel/${pat}; do \
+            [ -e "$w" ] && uv pip install --system --no-cache --no-deps "$w"; \
+        done; \
+    done; \
+    rm -rf /tmp/sgl-kernel /tmp/sgl-kernel.zip
+
+# SGLang's NPU pyproject omits the CUDA-only dependencies
+RUN set -eux; \
+    git init /opt/sglang; \
+    cd /opt/sglang; \
+    git remote add origin "${SGLANG_REPO}"; \
+    (git fetch --depth 1 origin "${SGLANG_COMMIT}" && git checkout FETCH_HEAD) \
+        || (git fetch origin && git checkout "${SGLANG_COMMIT}"); \
+    cd python; \
+    if [ -f pyproject_npu.toml ]; then rm -f pyproject.toml; mv pyproject_npu.toml pyproject.toml; fi; \
+    uv pip install --system --no-cache -e . --index-url "${PIP_INDEX_URL}"; \
+    cd /opt/sglang && rm -rf .git
+
+COPY scripts/npu/requirements-npu.txt /tmp/requirements-npu.txt
+RUN uv pip install --system --no-cache -r /tmp/requirements-npu.txt \
+        --index-url "${PIP_INDEX_URL}"
+
+# triton-ascend provides the Ascend libtriton; install triton first for its metadata, then reinstall it
+RUN uv pip install --system --no-cache "triton==3.6.0" \
+        --index-url "${PIP_INDEX_URL}"
+
+RUN uv pip install --system --no-cache --no-deps --reinstall "triton-ascend==3.6.0" \
+        --index-url "${ASCEND_INDEX}"
+
+# verify the Triton backend at build time
+RUN python -c "import triton; from triton._C.libtriton import ascend; print('triton', triton.__version__, 'ascend', ascend.__file__)"
+
+# torch 2.13's dynamo rejects the duplicate torch.npu.random rules in torch_npu
+RUN f=/usr/local/python3.12.15/lib/python3.12/site-packages/torch_npu/dynamo/trace_rule.py; \
+    if [ -f "$f" ]; then \
+        sed -Ei \
+            -e '/^[[:space:]]*"torch\.npu\.random\.manual_seed(_all)?",[[:space:]]*$/d' \
+            -e 's/^([[:space:]]*)"torch\.npu\.set_device",/\1"torch.npu.random.manual_seed_all",\n\1"torch.npu.random.manual_seed",\n\1"torch.npu.set_device",/' \
+            "$f"; \
+    fi
+
+WORKDIR /workspace/miles
+COPY . /workspace/miles
+RUN uv pip install --system --no-cache --no-deps /workspace/miles \
+        --index-url "${PIP_INDEX_URL}"

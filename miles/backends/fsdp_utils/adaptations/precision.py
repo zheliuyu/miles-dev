@@ -6,8 +6,8 @@ Resolves the FSDP ``MixedPrecisionPolicy`` dtypes and whether to keep an fp32 ma
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
-
 import torch
+from miles.platforms import current_platform
 
 
 @dataclass
@@ -31,7 +31,7 @@ def default_precision_policy(args) -> PrecisionPolicy:
 def precision_forward_context(policy: PrecisionPolicy):
     if policy.autocast_dtype is None:
         return nullcontext()
-    return torch.autocast(device_type="cuda", dtype=policy.autocast_dtype)
+    return torch.autocast(device_type=current_platform.device_type, dtype=policy.autocast_dtype)
 
 
 def apply_fp32_master(
